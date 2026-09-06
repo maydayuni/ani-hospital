@@ -16433,12 +16433,115 @@ local taskStepCFrames = {
 }
 
 local checkinSubTargets = { "Form", "Camera", "Computer", "PatientBadgeBase", "Printer", "Photo" }
+local lastTaskDiagnostic = ""
+local lastTaskDiagnosticAt = 0
+
+local function taskDiagnostic(message)
+    local now = os.clock()
+    if lastTaskDiagnostic == message and now - lastTaskDiagnosticAt < 8 then
+        return
+    end
+    lastTaskDiagnostic = message
+    lastTaskDiagnosticAt = now
+    notify("Auto Tasks", message, 3)
+end
+
+local function findDescendantByNames(root, names)
+    if not root then return nil end
+    local wanted = {}
+    for _, name in ipairs(names) do
+        wanted[string.lower(name)] = true
+    end
+    if wanted[string.lower(root.Name)] then return root end
+    for _, descendant in ipairs(root:GetDescendants()) do
+        if wanted[string.lower(descendant.Name)] then
+            return descendant
+        end
+    end
+    return nil
+end
+
+local function findPrompt(root)
+    if not root then return nil end
+    if root:IsA("ProximityPrompt") then return root end
+    local named = root:FindFirstChild("PP", true)
+    if named and named:IsA("ProximityPrompt") then return named end
+    return root:FindFirstChildWhichIsA("ProximityPrompt", true)
+end
+
+local function findTaskPrompt(root, targetName)
+    local prompt = findPrompt(findDescendantByNames(root, { targetName }))
+    if prompt then return prompt end
+    if not root then return nil end
+    local needle = string.lower(targetName):gsub("[^%w]", "")
+    for _, descendant in ipairs(root:GetDescendants()) do
+        if descendant:IsA("ProximityPrompt") then
+            local values = {
+                descendant.Name,
+                descendant.ActionText,
+                descendant.ObjectText,
+            }
+            for _, value in ipairs(values) do
+                local normalized = string.lower(tostring(value)):gsub("[^%w]", "")
+                if normalized:find(needle, 1, true) then
+                    return descendant
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function fireTaskPrompt(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") or prompt.Enabled == false then
+        return false
+    end
+    if not fireproximityprompt then
+        notify("Auto Tasks", "Môi trường hiện tại không hỗ trợ fireproximityprompt.", 4)
+        return false
+    end
+    local ok = pcall(function()
+        fireproximityprompt(prompt)
+    end)
+    return ok
+end
+
+local function findCheckinFolder()
+    return findDescendantByNames(workspace, { "Checkin", "Check-in", "Check In" })
+end
+
+local function findActiveNpc()
+    local folder = findDescendantByNames(workspace, { "NPCs", "NPC", "Patients", "Patient" })
+    if not folder then return nil end
+    for _, child in ipairs(folder:GetChildren()) do
+        if child:IsA("Model") and child:FindFirstChildOfClass("Humanoid") then
+            return child
+        end
+    end
+    for _, descendant in ipairs(folder:GetDescendants()) do
+        if descendant:IsA("Model") and descendant:FindFirstChildOfClass("Humanoid") then
+            return descendant
+        end
+    end
+    return nil
+end
+
+local function moveToPrompt(root, prompt, distance)
+    if not root or not prompt or not prompt.Parent then return false end
+    local target = prompt.Parent:IsA("BasePart") and prompt.Parent
+        or prompt.Parent:FindFirstChildWhichIsA("BasePart", true)
+    if not target then return false end
+    root.CFrame = target.CFrame * CFrame.new(0, 0, distance or 2)
+    return true
+end
 
 local function doTaskAtPrompt(prompt, stepIndex)
     local char = getChar()
     local root = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not root or not prompt or not hum then return end
+    local oldCFrame = root.CFrame
+    local wasAnchored = root.Anchored
     root.Anchored = true
     local step = taskStepCFrames[stepIndex]
     if step then
@@ -16450,13 +16553,22 @@ local function doTaskAtPrompt(prompt, stepIndex)
             camera.CFrame = CFrame.lookAt(Vector3.new(-99.208725, 5, 1.20668), targetPos)
         end
     end
+    if prompt.Parent then
+        local target = prompt.Parent:IsA("BasePart") and prompt.Parent
+            or prompt.Parent:FindFirstChildWhichIsA("BasePart", true)
+        if target then
+            root.CFrame = CFrame.new(target.Position + Vector3.new(0, 0, 2))
+            camera.CFrame = CFrame.lookAt(root.Position, target.Position)
+        end
+    end
     task.wait(0.6)
-    pcall(function()
-        if fireproximityprompt then fireproximityprompt(prompt) end
-    end)
+    fireTaskPrompt(prompt)
     task.wait(0.6)
     camera.CameraSubject = hum
-    root.Anchored = false
+    root.Anchored = wasAnchored
+    if not prompt.Enabled then
+        root.CFrame = oldCFrame
+    end
 end
 
 local function autoTasksLoop(runId)
@@ -16471,50 +16583,42 @@ local function autoTasksLoop(runId)
     cubo1.Parent = workspace
     table.insert(helperParts, cubo1)
 
-    local npcsFolder = workspace:FindFirstChild("NPCs")
-    local checkinFolder = workspace:FindFirstChild("Misc")
-        and workspace.Misc:FindFirstChild("Checkin")
-
     while state.autoTasks and autoTaskRunId == runId and not dead do
-        if npcsFolder then
-            local npc = npcsFolder:GetChildren()[1]
-            if npc and npc:IsA("Model") and npc:FindFirstChildOfClass("Humanoid") then
+        local npc = findActiveNpc()
+        local checkinFolder = findCheckinFolder()
+        if not npc then
+            taskDiagnostic("Không tìm thấy NPC bệnh nhân đang hoạt động.")
+        elseif not checkinFolder then
+            taskDiagnostic("Không tìm thấy khu Check-in trong Workspace.")
+        else
                 local isAnom = (npc:GetAttribute("Skinwalker") == true)
                     or (npc:GetAttribute("SkinwalkerEasy") == true)
                     or (npc:GetAttribute("PenaltyWhenLettingIn") == true)
                     or (npc:GetAttribute("HasCameraEffect") == true)
                 if isAnom then
                     -- skinwalker at the door? shutter SLAMS
-                    if checkinFolder then
-                        local shutter = checkinFolder:FindFirstChild("ShutterButton")
-                        local pp = shutter and (shutter:FindFirstChild("PP")
-                            or shutter:FindFirstChildOfClass("ProximityPrompt"))
-                        if pp then
-                            pcall(function()
-                                if fireproximityprompt then fireproximityprompt(pp) end
-                            end)
-                            task.wait(4)
-                            pcall(function()
-                                if fireproximityprompt then fireproximityprompt(pp) end
-                            end)
-                        end
+                    local shutter = findDescendantByNames(checkinFolder, { "ShutterButton", "Shutter" })
+                    local pp = findPrompt(shutter)
+                    if pp then
+                        fireTaskPrompt(pp)
+                        task.wait(4)
+                        fireTaskPrompt(pp)
+                    else
+                        taskDiagnostic("Không tìm thấy nút đóng cửa cho NPC bất thường.")
                     end
                 else
-                    if checkinFolder then
-                        for idx, name in ipairs(checkinSubTargets) do
-                            if not state.autoTasks or dead then break end
-                            local obj = checkinFolder:FindFirstChild(name)
-                            local pp = obj and (obj:FindFirstChild("PP")
-                                or obj:FindFirstChildOfClass("ProximityPrompt"))
-                            if pp then
-                                doTaskAtPrompt(pp, idx)
-                                task.wait(1.4)
-                            end
+                    for idx, name in ipairs(checkinSubTargets) do
+                        if not state.autoTasks or dead then break end
+                        local pp = findTaskPrompt(checkinFolder, name)
+                        if pp then
+                            doTaskAtPrompt(pp, idx)
+                            task.wait(1.4)
+                        else
+                            taskDiagnostic("Không tìm thấy bước Check-in: " .. name)
                         end
-                        task.wait(2)
                     end
+                    task.wait(2)
                 end
-            end
         end
         local char = getChar()
         local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -16536,17 +16640,14 @@ end
 -- ==========================================
 local function autoHealLoop(runId)
     while state.autoHeal and autoHealRunId == runId and not dead do
-        local rooms = workspace:FindFirstChild("Misc")
-            and workspace.Misc:FindFirstChild("Rooms")
+        local rooms = findDescendantByNames(workspace, { "Rooms", "PatientRooms", "Patient Rooms" })
         local prompt, roomParent
         if rooms then
-            for _, r in ipairs(rooms:GetChildren()) do
-                local inner = r:FindFirstChildOfClass("Model")
-                if inner then
-                    local pp = inner:FindFirstChild("PP")
-                        or inner:FindFirstChildOfClass("ProximityPrompt")
-                    if pp and pp.Enabled then
-                        prompt, roomParent = pp, inner
+            for _, candidate in ipairs(rooms:GetDescendants()) do
+                if candidate:IsA("Model") then
+                    local candidatePrompt = findPrompt(candidate)
+                    if candidatePrompt and candidatePrompt.Enabled then
+                        prompt, roomParent = candidatePrompt, candidate
                         break
                     end
                 end
@@ -16556,55 +16657,46 @@ local function autoHealLoop(runId)
         if prompt and roomParent then
             local root = getRoot()
             if root then
-                root.CFrame = roomParent:GetPivot() * CFrame.new(0, 0, 2)
+                moveToPrompt(root, prompt, 2)
                 task.wait(0.3)
-                pcall(function()
-                    if fireproximityprompt then fireproximityprompt(prompt) end
-                end)
+                fireTaskPrompt(prompt)
                 task.wait(4)
 
-                local analyzer = roomParent:FindFirstChild("Analyzer")
-                    or roomParent:FindFirstChild("Processor")
-                local analyzerPP = analyzer and (analyzer:FindFirstChild("PP")
-                    or analyzer:FindFirstChildOfClass("ProximityPrompt"))
+                local analyzer = findDescendantByNames(roomParent, { "Analyzer", "Processor", "Analyze" })
+                local analyzerPP = findPrompt(analyzer)
                 if analyzerPP and analyzerPP.Enabled then
-                    root.CFrame = analyzerPP.Parent:GetPivot() * CFrame.new(0, 0, 2)
+                    moveToPrompt(root, analyzerPP, 2)
                     task.wait(0.3)
-                    pcall(function()
-                        if fireproximityprompt then fireproximityprompt(analyzerPP) end
-                    end)
+                    fireTaskPrompt(analyzerPP)
                     task.wait(5)
                 end
 
-                local comp = roomParent:FindFirstChild("Computer")
-                    or roomParent:FindFirstChild("PC")
-                local compPP = comp and (comp:FindFirstChild("PP")
-                    or comp:FindFirstChildOfClass("ProximityPrompt"))
+                local comp = findDescendantByNames(roomParent, { "Computer", "PC", "Diagnosis" })
+                local compPP = findPrompt(comp)
                 if compPP and compPP.Enabled then
-                    root.CFrame = compPP.Parent:GetPivot() * CFrame.new(0, 0, 3)
+                    moveToPrompt(root, compPP, 3)
                     task.wait(0.3)
-                    pcall(function()
-                        if fireproximityprompt then fireproximityprompt(compPP) end
-                    end)
+                    fireTaskPrompt(compPP)
                     task.wait(1.5)
                 end
 
-                local supplies = workspace:FindFirstChild("Misc")
-                    and workspace.Misc:FindFirstChild("Supplies")
+                local supplies = findDescendantByNames(workspace, { "Supplies", "Medical Supplies", "Medicine" })
                 if supplies then
                     for _, desc in ipairs(supplies:GetDescendants()) do
                         if desc:IsA("ProximityPrompt") and desc.Enabled then
-                            root.CFrame = desc.Parent:GetPivot() * CFrame.new(0, 0, 3)
+                            moveToPrompt(root, desc, 3)
                             task.wait(0.3)
-                            pcall(function()
-                                if fireproximityprompt then fireproximityprompt(desc) end
-                            end)
+                            fireTaskPrompt(desc)
                             task.wait(1)
                             break
                         end
                     end
                 end
             end
+        elseif not rooms then
+            taskDiagnostic("Không tìm thấy khu phòng bệnh nhân.")
+        else
+            taskDiagnostic("Không tìm thấy bệnh nhân hoặc prompt chữa trị đang bật.")
         end
         task.wait(1)
     end
