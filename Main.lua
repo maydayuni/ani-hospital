@@ -15745,7 +15745,11 @@ local autoTaskRunId = 0
 local autoHealRunId = 0
 local savedLighting = nil
 local savedLowGraphics = {}
+local savedTerrainColors = {}
+local savedLowLighting = nil
 local lowGraphicsDescendantConn = nil
+local noClipLastUpdate = 0
+local playerEspLastUpdate = 0
 local automationBusy = false
 local automationPhase = "Idle"
 local debugEnabled = false
@@ -15867,6 +15871,8 @@ end
 
 track(runService.Heartbeat:Connect(function()
     if dead or not state.noClip then return end
+    if os.clock() - noClipLastUpdate < 0.08 then return end
+    noClipLastUpdate = os.clock()
     local char = getChar()
     if not char then return end
     for _, part in ipairs(char:GetDescendants()) do
@@ -15942,12 +15948,14 @@ local function rebuildWorldScanCache()
 end
 
 track(workspace.DescendantAdded:Connect(function(inst)
+    if state.lowGraphics then return end
     if not inst:IsA("Highlight") then
         worldScanDirty = true
     end
 end))
 
 track(workspace.DescendantRemoving:Connect(function(inst)
+    if state.lowGraphics then return end
     if not inst:IsA("Highlight") then
         worldScanDirty = true
     end
@@ -16082,19 +16090,78 @@ local function simplifyLowGraphicsInstance(instance)
         rememberLowGraphicsValue(instance, property)
         pcall(function() instance[property] = value end)
     end
+    local function hasVisualName()
+        local current = instance
+        local probe = instance
+        for _ = 1, 4 do
+            if not probe then break end
+            if probe:IsA("Model") then
+                if probe:FindFirstChildOfClass("Humanoid")
+                    or probe:FindFirstChildWhichIsA("ProximityPrompt", true)
+                    or probe:FindFirstChildWhichIsA("ClickDetector", true) then
+                    return false
+                end
+            end
+            probe = probe.Parent
+        end
+        for _ = 1, 4 do
+            if not current then break end
+            local name = string.lower(current.Name)
+            if name:find("tree", 1, true) or name:find("plant", 1, true)
+                or name:find("leaf", 1, true) or name:find("foliage", 1, true)
+                or name:find("bush", 1, true) or name:find("shrub", 1, true)
+                or name:find("grass", 1, true) or name:find("weed", 1, true)
+                or name:find("vegetation", 1, true) or name:find("decor", 1, true)
+                or name:find("decoration", 1, true) or name:find("prop", 1, true)
+                or name:find("foliage", 1, true) or name:find("flower", 1, true)
+                or name:find("rock", 1, true) or name:find("statue", 1, true)
+                or name:find("fountain", 1, true) then
+                return true
+            end
+            current = current.Parent
+        end
+        return false
+    end
 
     if instance:IsA("BasePart") then
-        setProperty("Material", Enum.Material.Plastic)
-        setProperty("Reflectance", 0)
-        setProperty("CastShadow", false)
+        if hasVisualName() then
+            setProperty("LocalTransparencyModifier", 1)
+        else
+            local partName = string.lower(instance.Name)
+            if partName:find("ground", 1, true) or partName:find("soil", 1, true)
+                or partName:find("dirt", 1, true) then
+                setProperty("Color", Color3.fromRGB(183, 151, 112))
+            end
+            setProperty("Material", Enum.Material.Plastic)
+            setProperty("Reflectance", 0)
+            setProperty("CastShadow", false)
+        end
     elseif instance:IsA("ParticleEmitter") or instance:IsA("Trail")
         or instance:IsA("Beam") or instance:IsA("Smoke")
         or instance:IsA("Fire") or instance:IsA("Sparkles") then
         setProperty("Enabled", false)
     elseif instance:IsA("PostEffect") or instance:IsA("Highlight") then
         setProperty("Enabled", false)
+    elseif instance:IsA("Clouds") then
+        setProperty("Enabled", false)
+    elseif instance:IsA("Sky") then
+        setProperty("CelestialBodiesShown", false)
+        setProperty("StarCount", 0)
+        setProperty("SunAngularSize", 0)
+        setProperty("MoonAngularSize", 0)
+        setProperty("SkyboxBk", "")
+        setProperty("SkyboxDn", "")
+        setProperty("SkyboxFt", "")
+        setProperty("SkyboxLf", "")
+        setProperty("SkyboxRt", "")
+        setProperty("SkyboxUp", "")
     elseif instance:IsA("Terrain") then
         setProperty("Decoration", false)
+        setProperty("WaterColor", Color3.fromRGB(126, 177, 190))
+    elseif instance:IsA("Atmosphere") then
+        setProperty("Density", 0)
+        setProperty("Haze", 0)
+        setProperty("Glare", 0)
     end
 end
 
@@ -16103,10 +16170,36 @@ local function setLowGraphics(enabled)
     debugLog("Low graphics", enabled and "enabled" or "disabled")
 
     if enabled then
+        if not savedLowLighting then
+            savedLowLighting = {
+                Ambient = lighting.Ambient,
+                OutdoorAmbient = lighting.OutdoorAmbient,
+                ColorShift_Top = lighting.ColorShift_Top,
+                ColorShift_Bottom = lighting.ColorShift_Bottom,
+                FogColor = lighting.FogColor,
+                FogEnd = lighting.FogEnd,
+                GlobalShadows = lighting.GlobalShadows,
+            }
+        end
+        lighting.Ambient = Color3.fromRGB(145, 190, 225)
+        lighting.OutdoorAmbient = Color3.fromRGB(145, 190, 225)
+        lighting.ColorShift_Top = Color3.fromRGB(0, 0, 0)
+        lighting.ColorShift_Bottom = Color3.fromRGB(0, 0, 0)
+        lighting.FogColor = Color3.fromRGB(145, 190, 225)
+        lighting.FogEnd = 100000
+        lighting.GlobalShadows = false
         for _, instance in ipairs(lighting:GetChildren()) do
             simplifyLowGraphicsInstance(instance)
         end
         simplifyLowGraphicsInstance(workspace.Terrain)
+        local terrain = workspace.Terrain
+        for _, material in ipairs({ Enum.Material.Grass, Enum.Material.Ground,
+            Enum.Material.LeafyGrass, Enum.Material.Mud, Enum.Material.Sand }) do
+            if savedTerrainColors[material] == nil then
+                savedTerrainColors[material] = terrain:GetMaterialColor(material)
+            end
+            terrain:SetMaterialColor(material, Color3.fromRGB(183, 151, 112))
+        end
         for _, instance in ipairs(workspace:GetDescendants()) do
             simplifyLowGraphicsInstance(instance)
         end
@@ -16114,7 +16207,24 @@ local function setLowGraphics(enabled)
         if not lowGraphicsDescendantConn then
             lowGraphicsDescendantConn = workspace.DescendantAdded:Connect(function(instance)
                 if state.lowGraphics then
-                    task.defer(simplifyLowGraphicsInstance, instance)
+                    local shouldProcess = instance:IsA("ParticleEmitter")
+                        or instance:IsA("Trail") or instance:IsA("Beam")
+                        or instance:IsA("Smoke") or instance:IsA("Fire")
+                        or instance:IsA("Sparkles") or instance:IsA("PostEffect")
+                        or instance:IsA("Highlight") or instance:IsA("Clouds")
+                        or instance:IsA("Sky") or instance:IsA("Atmosphere")
+                    if not shouldProcess and instance:IsA("BasePart") then
+                        local name = string.lower(instance.Name)
+                        shouldProcess = name:find("tree", 1, true) ~= nil
+                            or name:find("leaf", 1, true) ~= nil
+                            or name:find("grass", 1, true) ~= nil
+                            or name:find("bush", 1, true) ~= nil
+                            or name:find("decor", 1, true) ~= nil
+                            or name:find("prop", 1, true) ~= nil
+                    end
+                    if shouldProcess then
+                        task.defer(simplifyLowGraphicsInstance, instance)
+                    end
                 end
             end)
         end
@@ -16131,9 +16241,23 @@ local function setLowGraphics(enabled)
             end
         end
         savedLowGraphics = {}
+        for material, color in pairs(savedTerrainColors) do
+            pcall(function() workspace.Terrain:SetMaterialColor(material, color) end)
+        end
+        savedTerrainColors = {}
+        if savedLowLighting then
+            for property, value in pairs(savedLowLighting) do
+                pcall(function() lighting[property] = value end)
+            end
+            savedLowLighting = nil
+        end
     end
 
     if enabled then
+        state.anomaliesESP = false
+        state.patientsESP = false
+        state.itemsESP = false
+        state.playerESP = false
         state.drawLines = false
         clearAllLines()
         clearESPByType("Anomaly")
@@ -16334,6 +16458,8 @@ end
 
 track(runService.RenderStepped:Connect(function()
     if dead or not state.playerESP then return end
+    if os.clock() - playerEspLastUpdate < 0.15 then return end
+    playerEspLastUpdate = os.clock()
     for _, p in ipairs(players:GetPlayers()) do
         if p ~= localPlayer then applyPlayerESP(p) end
     end
