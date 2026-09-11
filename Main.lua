@@ -15705,6 +15705,7 @@ end
 
 -- kill switch: cleanup flips this, every loop bails out
 local dead = false
+local cleanupDone = false
 
 -- State Variables
 local state = {
@@ -15738,6 +15739,7 @@ local minigameClicked = {}
 local minigameQueue = {}
 local sanityConns = {}
 local helperParts = {}
+local lowGraphicsProxyParts = {}
 local worldScanDirty = true
 local cachedCandidates = {}
 local cachedPrompts = {}
@@ -15748,6 +15750,7 @@ local savedLowGraphics = {}
 local savedTerrainColors = {}
 local savedLowLighting = nil
 local lowGraphicsDescendantConn = nil
+local proxyModels = {}
 local noClipLastUpdate = 0
 local playerEspLastUpdate = 0
 local automationBusy = false
@@ -15824,6 +15827,7 @@ local function getHumanoid()
     local c = getChar()
     return c and c:FindFirstChildOfClass("Humanoid")
 end
+local applyCharacterScale
 
 local function applyNoClip(enabled)
     state.noClip = enabled
@@ -15890,6 +15894,9 @@ track(localPlayer.CharacterAdded:Connect(function(newChar)
         pcall(function()
             if state.noClip then
                 applyNoClip(true)
+            end
+            if state.shrink then
+                applyCharacterScale(true)
             end
         end)
     end)
@@ -16093,7 +16100,7 @@ local function simplifyLowGraphicsInstance(instance)
     local function hasVisualName()
         local current = instance
         local probe = instance
-        for _ = 1, 4 do
+        for _ = 1, 12 do
             if not probe then break end
             if probe:IsA("Model") then
                 if probe:FindFirstChildOfClass("Humanoid")
@@ -16104,7 +16111,7 @@ local function simplifyLowGraphicsInstance(instance)
             end
             probe = probe.Parent
         end
-        for _ = 1, 4 do
+        for _ = 1, 12 do
             if not current then break end
             local name = string.lower(current.Name)
             if name:find("tree", 1, true) or name:find("plant", 1, true)
@@ -16165,6 +16172,77 @@ local function simplifyLowGraphicsInstance(instance)
     end
 end
 
+local function isInteractiveModel(model)
+    return model:FindFirstChildOfClass("Humanoid")
+        or model:FindFirstChildWhichIsA("ProximityPrompt", true)
+        or model:FindFirstChildWhichIsA("ClickDetector", true)
+end
+
+local function isSimpleProxyModel(model)
+    if not model or not model:IsA("Model") or isInteractiveModel(model) then
+        return false
+    end
+    local current = model
+    for _ = 1, 4 do
+        if not current then break end
+        local name = string.lower(current.Name)
+        if name:find("tree", 1, true) or name:find("plant", 1, true)
+            or name:find("leaf", 1, true) or name:find("grass", 1, true)
+            or name:find("bush", 1, true) or name:find("shrub", 1, true)
+            or name:find("foliage", 1, true) or name:find("vegetation", 1, true)
+            or name:find("building", 1, true) or name:find("house", 1, true)
+            or name:find("apartment", 1, true) or name:find("structure", 1, true)
+            or name:find("decor", 1, true) or name:find("decoration", 1, true)
+            or name:find("prop", 1, true) or name:find("rock", 1, true)
+            or name:find("statue", 1, true) or name:find("fountain", 1, true) then
+            return true
+        end
+        current = current.Parent
+    end
+    return false
+end
+
+local function simplifyDecorationModel(model)
+    if not state.lowGraphics or not isSimpleProxyModel(model) then return end
+    if model:GetAttribute("KryxLowGraphicsProxy") then return end
+
+    local ok, boxCFrame, boxSize = pcall(function()
+        return model:GetBoundingBox()
+    end)
+    if not ok or not boxCFrame or not boxSize then return end
+
+    model:SetAttribute("KryxLowGraphicsProxy", true)
+    table.insert(proxyModels, model)
+    for _, descendant in ipairs(model:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            rememberLowGraphicsValue(descendant, "LocalTransparencyModifier")
+            descendant.LocalTransparencyModifier = 1
+        end
+    end
+
+    local proxy = Instance.new("Part")
+    proxy.Name = "KryxLowGraphicsProxy"
+    proxy.Size = Vector3.new(
+        math.max(boxSize.X, 1),
+        math.max(boxSize.Y, 1),
+        math.max(boxSize.Z, 1)
+    )
+    proxy.CFrame = boxCFrame
+    proxy.Anchored = true
+    proxy.CanCollide = false
+    proxy.CanTouch = false
+    proxy.CastShadow = false
+    proxy.Material = Enum.Material.Plastic
+    local name = string.lower(model.Name)
+    proxy.Color = (name:find("tree", 1, true) or name:find("plant", 1, true)
+        or name:find("bush", 1, true) or name:find("grass", 1, true))
+        and Color3.fromRGB(104, 138, 91)
+        or Color3.fromRGB(156, 139, 119)
+    proxy.Parent = workspace
+    table.insert(helperParts, proxy)
+    table.insert(lowGraphicsProxyParts, proxy)
+end
+
 local function setLowGraphics(enabled)
     state.lowGraphics = enabled
     debugLog("Low graphics", enabled and "enabled" or "disabled")
@@ -16201,6 +16279,9 @@ local function setLowGraphics(enabled)
             terrain:SetMaterialColor(material, Color3.fromRGB(183, 151, 112))
         end
         for _, instance in ipairs(workspace:GetDescendants()) do
+            if instance:IsA("Model") then
+                simplifyDecorationModel(instance)
+            end
             simplifyLowGraphicsInstance(instance)
         end
 
@@ -16213,6 +16294,7 @@ local function setLowGraphics(enabled)
                         or instance:IsA("Sparkles") or instance:IsA("PostEffect")
                         or instance:IsA("Highlight") or instance:IsA("Clouds")
                         or instance:IsA("Sky") or instance:IsA("Atmosphere")
+                        or (instance:IsA("Model") and isSimpleProxyModel(instance))
                     if not shouldProcess and instance:IsA("BasePart") then
                         local name = string.lower(instance.Name)
                         shouldProcess = name:find("tree", 1, true) ~= nil
@@ -16223,7 +16305,13 @@ local function setLowGraphics(enabled)
                             or name:find("prop", 1, true) ~= nil
                     end
                     if shouldProcess then
-                        task.defer(simplifyLowGraphicsInstance, instance)
+                        task.defer(function()
+                            if instance:IsA("Model") then
+                                simplifyDecorationModel(instance)
+                            else
+                                simplifyLowGraphicsInstance(instance)
+                            end
+                        end)
                     end
                 end
             end)
@@ -16233,6 +16321,12 @@ local function setLowGraphics(enabled)
             lowGraphicsDescendantConn:Disconnect()
             lowGraphicsDescendantConn = nil
         end
+        for _, proxy in ipairs(lowGraphicsProxyParts) do
+            if proxy and proxy.Parent then
+                pcall(function() proxy:Destroy() end)
+            end
+        end
+        lowGraphicsProxyParts = {}
         for instance, properties in pairs(savedLowGraphics) do
             if instance and instance.Parent then
                 for property, value in pairs(properties) do
@@ -16245,6 +16339,12 @@ local function setLowGraphics(enabled)
             pcall(function() workspace.Terrain:SetMaterialColor(material, color) end)
         end
         savedTerrainColors = {}
+        for _, model in ipairs(proxyModels) do
+            if model and model.Parent then
+                pcall(function() model:SetAttribute("KryxLowGraphicsProxy", nil) end)
+            end
+        end
+        proxyModels = {}
         if savedLowLighting then
             for property, value in pairs(savedLowLighting) do
                 pcall(function() lighting[property] = value end)
@@ -16618,18 +16718,32 @@ track(runService.RenderStepped:Connect(function()
 end))
 
 local characterScaleCache = {}
+local characterModelScaleCache = {}
 
-local function applyCharacterScale(enabled)
+applyCharacterScale = function(enabled)
     state.shrink = enabled
     local char = getChar()
     if not char then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return false end
 
-    if hum.ScaleTo then
-        pcall(function()
-            hum:ScaleTo(enabled and 0.7 or 1)
+    if char.ScaleTo then
+        local ok, currentScale = pcall(function()
+            return char:GetScale()
         end)
+        if enabled and characterModelScaleCache[char] == nil then
+            characterModelScaleCache[char] = (ok and currentScale) or 1
+        end
+        local targetScale = enabled and ((characterModelScaleCache[char] or 1) * 0.7)
+            or (characterModelScaleCache[char] or 1)
+        local scaled, scaleError = pcall(function()
+            char:ScaleTo(targetScale)
+        end)
+        if not scaled then
+            logError("Shrink", "Character:ScaleTo failed", scaleError)
+        elseif not enabled then
+            characterModelScaleCache[char] = nil
+        end
     end
 
     local scaleNames = {
@@ -16673,6 +16787,11 @@ local function applyCharacterScale(enabled)
         end
     end
 
+    local verifyOk, scale = pcall(function() return char:GetScale() end)
+    if enabled and verifyOk and scale >= (characterModelScaleCache[char] or 1) * 0.95 then
+        logError("Shrink", "Rig did not accept the requested scale", scale)
+        return false
+    end
     return true
 end
 
@@ -17845,6 +17964,8 @@ playerTab:Toggle({
         local ok = applyCharacterScale(s)
         if ok then
             notify("👤", s and "Nhân vật đã thu nhỏ lại." or "Nhân vật đã phục hồi kích thước ban đầu.", 2)
+        else
+            notify("👤", "Rig hiện tại không cho phép thay đổi kích thước. Đã ghi chi tiết vào Debug log.", 4)
         end
     end,
 })
@@ -18164,6 +18285,8 @@ miscTab:Button({
 -- every loop bails, every glow & line disappears)
 -- ==========================================
 genv.__AHOSP_CLEANUP = function()
+    if cleanupDone then return end
+    cleanupDone = true
     dead = true
     automationBusy = false
     autoTaskRunId = autoTaskRunId + 1
@@ -18208,6 +18331,25 @@ genv.__AHOSP_CLEANUP = function()
         if espLineGui and espLineGui.Parent then espLineGui:Destroy() end
     end)
     pcall(function() window:Destroy() end)
+    pcall(function()
+        local containers = { playerGui }
+        if gethui then table.insert(containers, gethui()) end
+        for _, container in ipairs(containers) do
+            if container then
+                for _, child in ipairs(container:GetChildren()) do
+                    if child.Name == "WindUI"
+                        or child.Name == "WindUI/Notifications"
+                        or child.Name == "WindUI/Dropdowns"
+                        or child.Name == "WindUI/Tooltips" then
+                        child:Destroy()
+                    end
+                end
+            end
+        end
+    end)
+    if genv.__AHOSP_CLEANUP then
+        genv.__AHOSP_CLEANUP = nil
+    end
 end
 
 -- Boot it up (v1.6.65 windows auto-open, just pick the first tab)
