@@ -15732,6 +15732,9 @@ local state = {
     hideNpcGraphics = true,
     fov = 70,
     characterScale = 0.7,
+    fixedFlight = false,
+    vehicleGrip = 1,
+    vehicleBrake = 1,
     speed = 16,
 }
 
@@ -15755,6 +15758,12 @@ local savedCameraFov = nil
 local lowGraphicsDescendantConn = nil
 local noClipLastUpdate = 0
 local playerEspLastUpdate = 0
+local fixedFlightCFrame = nil
+local lowGraphicsRunId = 0
+local vehicleSavedProperties = {}
+local vehicleLastModel = nil
+local vehicleLastGrip = nil
+local vehicleLastApply = 0
 local automationBusy = false
 local automationPhase = "Idle"
 local debugEnabled = false
@@ -16176,7 +16185,9 @@ local function simplifyLowGraphicsInstance(instance)
         setProperty("Decoration", false)
         setProperty("WaterColor", Color3.fromRGB(126, 177, 190))
     elseif instance:IsA("Atmosphere") then
-        setProperty("Density", 0)
+        setProperty("Color", Color3.fromRGB(176, 214, 240))
+        setProperty("Decay", Color3.fromRGB(176, 214, 240))
+        setProperty("Density", 0.12)
         setProperty("Haze", 0)
         setProperty("Glare", 0)
     end
@@ -16255,8 +16266,33 @@ local function applyFov(value)
     return true
 end
 
+local function processLowGraphicsBatch(runId)
+    local batch = {}
+    for _, instance in ipairs(lighting:GetChildren()) do
+        table.insert(batch, instance)
+    end
+    table.insert(batch, workspace.Terrain)
+    for _, instance in ipairs(workspace:GetDescendants()) do
+        table.insert(batch, instance)
+    end
+
+    for index, instance in ipairs(batch) do
+        if not state.lowGraphics or runId ~= lowGraphicsRunId then return end
+        if instance:IsA("Model") then
+            simplifyDecorationModel(instance)
+            hideNpcModel(instance)
+        end
+        simplifyLowGraphicsInstance(instance)
+        if index % 120 == 0 then
+            task.wait()
+        end
+    end
+end
+
 local function setLowGraphics(enabled)
     state.lowGraphics = enabled
+    lowGraphicsRunId = lowGraphicsRunId + 1
+    local runId = lowGraphicsRunId
     debugLog("Low graphics", enabled and "enabled" or "disabled")
 
     if enabled then
@@ -16278,10 +16314,6 @@ local function setLowGraphics(enabled)
         lighting.FogColor = Color3.fromRGB(145, 190, 225)
         lighting.FogEnd = 100000
         lighting.GlobalShadows = false
-        for _, instance in ipairs(lighting:GetChildren()) do
-            simplifyLowGraphicsInstance(instance)
-        end
-        simplifyLowGraphicsInstance(workspace.Terrain)
         local terrain = workspace.Terrain
         for _, material in ipairs({ Enum.Material.Grass, Enum.Material.Ground,
             Enum.Material.LeafyGrass, Enum.Material.Mud, Enum.Material.Sand }) do
@@ -16290,13 +16322,7 @@ local function setLowGraphics(enabled)
             end
             terrain:SetMaterialColor(material, Color3.fromRGB(183, 151, 112))
         end
-        for _, instance in ipairs(workspace:GetDescendants()) do
-            if instance:IsA("Model") then
-                simplifyDecorationModel(instance)
-                hideNpcModel(instance)
-            end
-            simplifyLowGraphicsInstance(instance)
-        end
+        task.spawn(processLowGraphicsBatch, runId)
 
         if not lowGraphicsDescendantConn then
             lowGraphicsDescendantConn = workspace.DescendantAdded:Connect(function(instance)
@@ -16738,6 +16764,83 @@ track(runService.RenderStepped:Connect(function()
     local offset = Vector3.new(0, 2, 6)
     local targetPos = targetRoot.Position + offset
     localRoot.CFrame = CFrame.new(targetPos)
+end))
+
+track(runService.RenderStepped:Connect(function()
+    if dead or not state.fixedFlight or not fixedFlightCFrame then return end
+    local root = getRoot()
+    if root then
+        root.CFrame = fixedFlightCFrame
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
+end))
+
+local function getVehicleSeat()
+    local char = getChar()
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local seat = hum and hum.SeatPart
+    return seat and seat:IsA("VehicleSeat") and seat or nil
+end
+
+local function restoreVehicleProperties()
+    for part, properties in pairs(vehicleSavedProperties) do
+        if part and part.Parent then
+            pcall(function() part.CustomPhysicalProperties = properties end)
+        end
+    end
+    vehicleSavedProperties = {}
+    vehicleLastModel = nil
+    vehicleLastGrip = nil
+    vehicleLastApply = 0
+end
+
+local function applyVehicleHandling(seat)
+    local model = seat and seat:FindFirstAncestorOfClass("Model")
+    if not model then return end
+    if vehicleLastModel and vehicleLastModel ~= model then
+        restoreVehicleProperties()
+    end
+    if model == vehicleLastModel and vehicleLastGrip == state.vehicleGrip
+        and os.clock() - vehicleLastApply < 0.5 then
+        return
+    end
+    vehicleLastModel = model
+    vehicleLastGrip = state.vehicleGrip
+    vehicleLastApply = os.clock()
+    for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if vehicleSavedProperties[part] == nil then
+                vehicleSavedProperties[part] = part.CustomPhysicalProperties
+            end
+            local grip = math.clamp(state.vehicleGrip, 1, 3)
+            local physical = part.CurrentPhysicalProperties
+            part.CustomPhysicalProperties = PhysicalProperties.new(
+                physical.Density,
+                math.clamp(0.7 * grip, 0.7, 2),
+                physical.Elasticity,
+                physical.FrictionWeight,
+                physical.ElasticityWeight
+            )
+        end
+    end
+    pcall(function() seat.MaxSpeed = math.max(seat.MaxSpeed, 60 * state.vehicleGrip) end)
+    pcall(function() seat.Torque = math.max(seat.Torque, 10000 * state.vehicleGrip) end)
+end
+
+track(runService.Heartbeat:Connect(function()
+    if dead then return end
+    local seat = getVehicleSeat()
+    if not seat then
+        if vehicleLastModel then restoreVehicleProperties() end
+        return
+    end
+    applyVehicleHandling(seat)
+    if seat.Throttle == 0 and state.vehicleBrake > 1 then
+        local velocity = seat.AssemblyLinearVelocity
+        local brake = math.clamp(1 - (state.vehicleBrake - 1) * 0.08, 0.55, 0.98)
+        seat.AssemblyLinearVelocity = velocity * brake
+    end
 end))
 
 local characterModelScaleCache = {}
@@ -17918,6 +18021,7 @@ playerTab:Input({
     Title = "FOV camera",
     Desc = "Nhập góc nhìn từ 40 đến 120",
     Placeholder = "Ví dụ: 70 hoặc 90",
+    Value = tostring(state.fov),
     Type = "Input",
     Callback = function(text)
         local numeric = tonumber(text)
@@ -18281,6 +18385,47 @@ miscTab:Button({
 })
 
 miscTab:Toggle({
+    Title = "Bay cố định tại chỗ",
+    Desc = "Giữ nhân vật ở đúng vị trí hiện tại, không bị trôi",
+    Default = false,
+    Callback = function(s)
+        state.fixedFlight = s
+        fixedFlightCFrame = s and (getRoot() and getRoot().CFrame or nil) or nil
+        notify("Bay", s and "Đã khóa vị trí hiện tại." or "Đã thả vị trí.", 2)
+    end,
+})
+
+miscTab:Input({
+    Title = "Độ bám xe",
+    Desc = "Mức 1-3; chỉ áp dụng khi đang ngồi VehicleSeat",
+    Placeholder = "Ví dụ: 1.5",
+    Value = tostring(state.vehicleGrip),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.vehicleGrip = math.clamp(value, 1, 3)
+            notify("Xe", "Độ bám: " .. tostring(state.vehicleGrip), 2)
+        end
+    end,
+})
+
+miscTab:Input({
+    Title = "Phanh xe",
+    Desc = "Mức 1-5; số càng cao thì xe dừng càng nhanh",
+    Placeholder = "Ví dụ: 3",
+    Value = tostring(state.vehicleBrake),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.vehicleBrake = math.clamp(value, 1, 5)
+            notify("Xe", "Phanh: " .. tostring(state.vehicleBrake), 2)
+        end
+    end,
+})
+
+miscTab:Toggle({
     Title = "Fix lag / Đồ họa đơn giản",
     Desc = "Tắt hiệu ứng, bóng đổ, ESP và giảm quét nền để nhẹ máy hơn",
     Default = false,
@@ -18342,6 +18487,17 @@ genv.__AHOSP_CLEANUP = function()
     applyCharacterScale(false)
     state.followPlayer = false
     state.followTarget = nil
+    state.fixedFlight = false
+    fixedFlightCFrame = nil
+    for part, properties in pairs(vehicleSavedProperties) do
+        if part and part.Parent then
+            pcall(function() part.CustomPhysicalProperties = properties end)
+        end
+    end
+    vehicleSavedProperties = {}
+    vehicleLastModel = nil
+    vehicleLastGrip = nil
+    vehicleLastApply = 0
     state.fasterActions = false
     applyFasterActions()
     promptDurations = {}
