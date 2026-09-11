@@ -15721,6 +15721,7 @@ local state = {
     autoHeal = false,
     mouseFree = false,
     noClip = false,
+    shrink = false,
     fly = false,
     antiAfk = true,
     fullbright = false,
@@ -15824,42 +15825,57 @@ local function applyNoClip(enabled)
         return false
     end
 
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if root then
-        root.CanCollide = false
-    end
-
     for _, part in ipairs(char:GetDescendants()) do
         if part:IsA("BasePart") then
             if enabled then
                 if part:GetAttribute("KryxOriginalCanCollide") == nil then
                     part:SetAttribute("KryxOriginalCanCollide", part.CanCollide)
                 end
-                if part ~= root then
-                    part.CanCollide = false
+                if part:GetAttribute("KryxOriginalCanTouch") == nil then
+                    part:SetAttribute("KryxOriginalCanTouch", part.CanTouch)
                 end
+                part.CanCollide = false
+                part.CanTouch = false
+                part.Massless = true
             else
-                local original = part:GetAttribute("KryxOriginalCanCollide")
-                if original ~= nil then
-                    part.CanCollide = original
+                local originalCollide = part:GetAttribute("KryxOriginalCanCollide")
+                local originalTouch = part:GetAttribute("KryxOriginalCanTouch")
+                if originalCollide ~= nil then
+                    part.CanCollide = originalCollide
                     part:SetAttribute("KryxOriginalCanCollide", nil)
-                elseif not part:IsA("HumanoidRootPart") then
+                else
                     part.CanCollide = true
                 end
+                if originalTouch ~= nil then
+                    part.CanTouch = originalTouch
+                    part:SetAttribute("KryxOriginalCanTouch", nil)
+                else
+                    part.CanTouch = true
+                end
+                part.Massless = false
             end
         end
-    end
-
-    if not enabled and root then
-        root.CanCollide = true
     end
 
     return true
 end
 
+track(runService.Heartbeat:Connect(function()
+    if dead or not state.noClip then return end
+    local char = getChar()
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+            part.CanTouch = false
+            part.Massless = true
+        end
+    end
+end))
+
 track(localPlayer.CharacterAdded:Connect(function(newChar)
     if not newChar then return end
-    task.delay(0.15, function()
+    task.delay(0.2, function()
         pcall(function()
             if state.noClip then
                 applyNoClip(true)
@@ -16336,6 +16352,59 @@ track(runService.RenderStepped:Connect(function()
         hum.CameraOffset = Vector3.new(0, 2, 0)
     end
 end))
+
+local characterScaleCache = {}
+
+local function applyCharacterScale(enabled)
+    state.shrink = enabled
+    local char = getChar()
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+
+    local scaleNames = {
+        "BodyWidthScale",
+        "BodyHeightScale",
+        "BodyDepthScale",
+        "HeadScale",
+        "ProportionScale",
+        "WidthScale",
+        "DepthScale",
+        "HeightScale",
+    }
+
+    for _, value in ipairs(hum:GetChildren()) do
+        if value:IsA("NumberValue") then
+            local name = value.Name
+            local shouldScale = false
+            for _, scaleName in ipairs(scaleNames) do
+                if name == scaleName then
+                    shouldScale = true
+                    break
+                end
+            end
+            if not shouldScale and name:find("Scale", 1, true) then
+                shouldScale = true
+            end
+
+            if shouldScale then
+                if enabled then
+                    if characterScaleCache[value] == nil then
+                        characterScaleCache[value] = value.Value
+                    end
+                    value.Value = math.min(value.Value, 0.55)
+                else
+                    if characterScaleCache[value] ~= nil then
+                        value.Value = characterScaleCache[value]
+                        characterScaleCache[value] = nil
+                    end
+                end
+            end
+        end
+    end
+
+    return true
+end
 
 -- ==========================================
 -- FASTER ACTIONS (every prompt fires instantly)
@@ -17503,42 +17572,9 @@ playerTab:Toggle({
     Desc = "Co người lại để dễ đi qua chỗ hẹp hoặc di chuyển tự do hơn",
     Default = false,
     Callback = function(s)
-        local char = getChar()
-        if not char then return end
-
-        local humanoid = char:FindFirstChildOfClass("Humanoid")
-        if not humanoid then return end
-
-        local scale = humanoid:FindFirstChild("BodyHeightScale")
-            or humanoid:FindFirstChild("BodyWidthScale")
-            or humanoid:FindFirstChild("BodyDepthScale")
-
-        if s then
-            if not humanoid:GetAttribute("KryxOriginalBodyScale") then
-                humanoid:SetAttribute("KryxOriginalBodyScale", tostring(scale and scale.Value or 1))
-            end
-
-            for _, child in ipairs(humanoid:GetChildren()) do
-                if child:IsA("NumberValue") and child.Name:find("Scale", 1, true) then
-                    local original = child:GetAttribute("KryxOriginalValue")
-                    if original == nil then
-                        child:SetAttribute("KryxOriginalValue", child.Value)
-                    end
-                    child.Value = math.min(child.Value, 0.5)
-                end
-            end
-            notify("👤", "Nhân vật đã thu nhỏ lại.", 2)
-        else
-            for _, child in ipairs(humanoid:GetChildren()) do
-                if child:IsA("NumberValue") and child.Name:find("Scale", 1, true) then
-                    local original = child:GetAttribute("KryxOriginalValue")
-                    if original ~= nil then
-                        child.Value = original
-                        child:SetAttribute("KryxOriginalValue", nil)
-                    end
-                end
-            end
-            notify("👤", "Nhân vật đã phục hồi kích thước ban đầu.", 2)
+        local ok = applyCharacterScale(s)
+        if ok then
+            notify("👤", s and "Nhân vật đã thu nhỏ lại." or "Nhân vật đã phục hồi kích thước ban đầu.", 2)
         end
     end,
 })
@@ -17795,6 +17831,8 @@ genv.__AHOSP_CLEANUP = function()
     setFullbright(false)
     state.noClip = false
     applyNoClip(false)
+    state.shrink = false
+    applyCharacterScale(false)
     state.fasterActions = false
     applyFasterActions()
     promptDurations = {}
