@@ -15729,6 +15729,9 @@ local state = {
     antiAfk = true,
     fullbright = false,
     lowGraphics = false,
+    hideNpcGraphics = true,
+    fov = 70,
+    characterScale = 0.7,
     speed = 16,
 }
 
@@ -15749,6 +15752,7 @@ local savedLighting = nil
 local savedLowGraphics = {}
 local savedTerrainColors = {}
 local savedLowLighting = nil
+local savedCameraFov = nil
 local lowGraphicsDescendantConn = nil
 local proxyModels = {}
 local noClipLastUpdate = 0
@@ -15828,6 +15832,7 @@ local function getHumanoid()
     return c and c:FindFirstChildOfClass("Humanoid")
 end
 local applyCharacterScale
+local applyThirdPerson
 
 local function applyNoClip(enabled)
     state.noClip = enabled
@@ -15897,6 +15902,11 @@ track(localPlayer.CharacterAdded:Connect(function(newChar)
             end
             if state.shrink then
                 applyCharacterScale(true)
+            end
+            if state.thirdPerson then
+                applyThirdPerson()
+            elseif workspace.CurrentCamera then
+                workspace.CurrentCamera.FieldOfView = state.fov
             end
         end)
     end)
@@ -16149,6 +16159,8 @@ local function simplifyLowGraphicsInstance(instance)
         setProperty("Enabled", false)
     elseif instance:IsA("PostEffect") or instance:IsA("Highlight") then
         setProperty("Enabled", false)
+    elseif instance:IsA("SelectionBox") or instance:IsA("BoxHandleAdornment") then
+        setProperty("Visible", false)
     elseif instance:IsA("Clouds") then
         setProperty("Enabled", false)
     elseif instance:IsA("Sky") then
@@ -16243,6 +16255,37 @@ local function simplifyDecorationModel(model)
     table.insert(lowGraphicsProxyParts, proxy)
 end
 
+local function hideNpcModel(model)
+    if not state.lowGraphics or not state.hideNpcGraphics
+        or not model or not model:IsA("Model")
+        or model == localPlayer.Character
+        or not model:FindFirstChildOfClass("Humanoid")
+        or model:FindFirstChildWhichIsA("ProximityPrompt", true)
+        or model:FindFirstChildWhichIsA("ClickDetector", true) then
+        return
+    end
+    for _, descendant in ipairs(model:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            rememberLowGraphicsValue(descendant, "LocalTransparencyModifier")
+            descendant.LocalTransparencyModifier = 1
+        elseif descendant:IsA("Decal") or descendant:IsA("Texture") then
+            rememberLowGraphicsValue(descendant, "Transparency")
+            descendant.Transparency = 1
+        end
+    end
+end
+
+local function applyFov(value)
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    state.fov = math.clamp(numeric, 40, 120)
+    local cam = workspace.CurrentCamera
+    if not cam then return false end
+    if savedCameraFov == nil then savedCameraFov = cam.FieldOfView end
+    cam.FieldOfView = state.fov
+    return true
+end
+
 local function setLowGraphics(enabled)
     state.lowGraphics = enabled
     debugLog("Low graphics", enabled and "enabled" or "disabled")
@@ -16281,6 +16324,7 @@ local function setLowGraphics(enabled)
         for _, instance in ipairs(workspace:GetDescendants()) do
             if instance:IsA("Model") then
                 simplifyDecorationModel(instance)
+                hideNpcModel(instance)
             end
             simplifyLowGraphicsInstance(instance)
         end
@@ -16294,7 +16338,10 @@ local function setLowGraphics(enabled)
                         or instance:IsA("Sparkles") or instance:IsA("PostEffect")
                         or instance:IsA("Highlight") or instance:IsA("Clouds")
                         or instance:IsA("Sky") or instance:IsA("Atmosphere")
+                        or instance:IsA("SelectionBox") or instance:IsA("BoxHandleAdornment")
                         or (instance:IsA("Model") and isSimpleProxyModel(instance))
+                        or (instance:IsA("Model") and state.hideNpcGraphics
+                            and instance:FindFirstChildOfClass("Humanoid") ~= nil)
                     if not shouldProcess and instance:IsA("BasePart") then
                         local name = string.lower(instance.Name)
                         shouldProcess = name:find("tree", 1, true) ~= nil
@@ -16308,6 +16355,7 @@ local function setLowGraphics(enabled)
                         task.defer(function()
                             if instance:IsA("Model") then
                                 simplifyDecorationModel(instance)
+                                hideNpcModel(instance)
                             else
                                 simplifyLowGraphicsInstance(instance)
                             end
@@ -16644,19 +16692,31 @@ end)
 -- ==========================================
 -- 3RD PERSON CAMERA
 -- ==========================================
-local function applyThirdPerson()
+applyThirdPerson = function()
+    local char = getChar()
+    if state.thirdPerson and char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.LocalTransparencyModifier = 0
+            end
+        end
+    end
     local hum = getHumanoid()
     if hum then
-        hum.CameraOffset = state.thirdPerson and Vector3.new(0, 2, 10) or Vector3.new(0, 0, 0)
+        hum.CameraOffset = state.thirdPerson and Vector3.new(0, 2, 0) or Vector3.new(0, 0, 0)
     end
 
     local cam = workspace.CurrentCamera
     if cam then
+        if savedCameraFov == nil then savedCameraFov = cam.FieldOfView end
         if state.thirdPerson then
             cam.CameraType = Enum.CameraType.Scriptable
+            cam.CameraSubject = hum
         else
             cam.CameraType = Enum.CameraType.Custom
+            if hum then cam.CameraSubject = hum end
         end
+        cam.FieldOfView = state.fov
     end
 end
 
@@ -16668,13 +16728,14 @@ track(runService.RenderStepped:Connect(function()
     if not root or not cam then return end
 
     local look = root.CFrame.LookVector
-    local targetPos = root.Position + Vector3.new(-look.X * 10, 4.5, -look.Z * 10)
+    local targetPos = root.Position - look * 10 + Vector3.new(0, 4.5, 0)
     local lookAt = root.Position + Vector3.new(0, 2, 0)
     cam.CFrame = CFrame.lookAt(targetPos, lookAt)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
         hum.CameraOffset = Vector3.new(0, 2, 0)
     end
+    cam.Focus = CFrame.new(lookAt)
 end))
 
 local function getNearestPlayerTarget()
@@ -16734,7 +16795,7 @@ applyCharacterScale = function(enabled)
         if enabled and characterModelScaleCache[char] == nil then
             characterModelScaleCache[char] = (ok and currentScale) or 1
         end
-        local targetScale = enabled and ((characterModelScaleCache[char] or 1) * 0.7)
+        local targetScale = enabled and ((characterModelScaleCache[char] or 1) * state.characterScale)
             or (characterModelScaleCache[char] or 1)
         local scaled, scaleError = pcall(function()
             char:ScaleTo(targetScale)
@@ -16788,8 +16849,10 @@ applyCharacterScale = function(enabled)
     end
 
     local verifyOk, scale = pcall(function() return char:GetScale() end)
-    if enabled and verifyOk and scale >= (characterModelScaleCache[char] or 1) * 0.95 then
-        logError("Shrink", "Rig did not accept the requested scale", scale)
+    local expectedScale = enabled and ((characterModelScaleCache[char] or 1) * state.characterScale)
+        or (characterModelScaleCache[char] or 1)
+    if enabled and verifyOk and math.abs(scale - expectedScale) > 0.05 then
+        logError("Shrink", "Rig did not accept the requested scale", scale, "expected=" .. tostring(expectedScale))
         return false
     end
     return true
@@ -17929,6 +17992,21 @@ playerTab:Toggle({
     end,
 })
 
+playerTab:Input({
+    Title = "FOV camera",
+    Desc = "Nhập góc nhìn từ 40 đến 120",
+    Placeholder = "Ví dụ: 70 hoặc 90",
+    Type = "Input",
+    Callback = function(text)
+        local numeric = tonumber(text)
+        if numeric and applyFov(numeric) then
+            notify("Camera", "FOV đã đặt: " .. tostring(state.fov), 2)
+        else
+            notify("Camera", "FOV hợp lệ nằm trong khoảng 40-120.", 3)
+        end
+    end,
+})
+
 playerTab:Toggle({
     Title = "Chống đứng yên",
     Desc = "Giữ phiên chơi không bị ngắt do không hoạt động",
@@ -17967,6 +18045,28 @@ playerTab:Toggle({
         else
             notify("👤", "Rig hiện tại không cho phép thay đổi kích thước. Đã ghi chi tiết vào Debug log.", 4)
         end
+    end,
+})
+
+playerTab:Input({
+    Title = "Tỷ lệ nhân vật",
+    Desc = "Nhập 0.1-2.0; 0.5 là nhỏ một nửa, 1 là bình thường",
+    Placeholder = "Ví dụ: 0.5 hoặc 1.2",
+    Type = "Input",
+    Callback = function(text)
+        local numeric = tonumber(text)
+        if not numeric then
+            notify("👤", "Tỷ lệ phải là số từ 0.1 đến 2.0.", 3)
+            return
+        end
+        state.characterScale = math.clamp(numeric, 0.1, 2)
+        if state.shrink then
+            local ok = applyCharacterScale(true)
+            if not ok then
+                notify("👤", "Rig hiện tại không nhận tỷ lệ mới.", 3)
+            end
+        end
+        notify("👤", "Tỷ lệ nhân vật: " .. tostring(state.characterScale), 2)
     end,
 })
 
@@ -18268,6 +18368,19 @@ miscTab:Toggle({
     end,
 })
 
+miscTab:Toggle({
+    Title = "Ẩn NPC không tương tác",
+    Desc = "Ẩn NPC không có prompt hoặc click detector để giảm model phải render",
+    Default = true,
+    Callback = function(s)
+        state.hideNpcGraphics = s
+        if state.lowGraphics then
+            setLowGraphics(false)
+            setLowGraphics(true)
+        end
+    end,
+})
+
 miscTab:Button({
     Title = "♻️ Unload Script",
     Desc = "Cleanly shuts everything off and closes the menu",
@@ -18297,6 +18410,12 @@ genv.__AHOSP_CLEANUP = function()
     setLowGraphics(false)
     state.noClip = false
     applyNoClip(false)
+    state.thirdPerson = false
+    applyThirdPerson()
+    if savedCameraFov and workspace.CurrentCamera then
+        workspace.CurrentCamera.FieldOfView = savedCameraFov
+        savedCameraFov = nil
+    end
     state.shrink = false
     applyCharacterScale(false)
     state.followPlayer = false
