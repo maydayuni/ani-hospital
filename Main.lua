@@ -15741,6 +15741,8 @@ local state = {
     vehicleExhaust = false,
     vehicleBrakeHeld = false,
     maxGraphics = false,
+    highQualityEdges = true,
+    driftEffects = true,
     speed = 16,
 }
 
@@ -15778,6 +15780,9 @@ local vehicleLastExhaust = nil
 local vehicleExhaustParts = {}
 local savedMaxGraphics = nil
 local savedMaxPartSettings = {}
+local savedQualityLevel = nil
+local maxGraphicsDescendantConn = nil
+local driftEffectParts = {}
 local automationBusy = false
 local automationPhase = "Idle"
 local debugEnabled = false
@@ -16292,6 +16297,15 @@ local function setMaxGraphics(enabled)
                 TerrainDecoration = workspace.Terrain.Decoration,
             }
         end
+        local okSettings, userGameSettings = pcall(function()
+            return UserSettings():GetService("UserGameSettings")
+        end)
+        if okSettings and userGameSettings and savedQualityLevel == nil then
+            pcall(function() savedQualityLevel = userGameSettings.SavedQualityLevel end)
+            if state.highQualityEdges then
+                pcall(function() userGameSettings.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel10 end)
+            end
+        end
         pcall(function() lighting.GlobalShadows = true end)
         pcall(function() lighting.Technology = Enum.Technology.Future end)
         pcall(function() lighting.EnvironmentDiffuseScale = 1 end)
@@ -16314,7 +16328,22 @@ local function setMaxGraphics(enabled)
                 pcall(function() instance.CastShadow = true end)
             end
         end
+        if not maxGraphicsDescendantConn then
+            maxGraphicsDescendantConn = workspace.DescendantAdded:Connect(function(instance)
+                if not state.maxGraphics then return end
+                if instance:IsA("MeshPart") then
+                    pcall(function() instance.RenderFidelity = Enum.RenderFidelity.Precise end)
+                    pcall(function() instance.CastShadow = true end)
+                elseif instance:IsA("BasePart") then
+                    pcall(function() instance.CastShadow = true end)
+                end
+            end)
+        end
     elseif savedMaxGraphics then
+        if maxGraphicsDescendantConn then
+            maxGraphicsDescendantConn:Disconnect()
+            maxGraphicsDescendantConn = nil
+        end
         for property, value in pairs(savedMaxGraphics) do
             if property ~= "TerrainDecoration" then
                 pcall(function() lighting[property] = value end)
@@ -16329,6 +16358,12 @@ local function setMaxGraphics(enabled)
             end
         end
         savedMaxPartSettings = {}
+        if savedQualityLevel then
+            pcall(function()
+                UserSettings():GetService("UserGameSettings").SavedQualityLevel = savedQualityLevel
+            end)
+            savedQualityLevel = nil
+        end
         savedMaxGraphics = nil
     end
 end
@@ -16837,9 +16872,10 @@ track(runService.RenderStepped:Connect(function()
     if dead or not state.fixedFlight or not fixedFlightCFrame then return end
     local root = getRoot()
     if root then
-        root.CFrame = fixedFlightCFrame
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
+        local current = root.CFrame
+        root.CFrame = CFrame.new(current.Position.X, fixedFlightCFrame.Position.Y, current.Position.Z)
+            * CFrame.Angles(current:ToEulerAnglesXYZ())
+        root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z)
     end
 end))
 
@@ -16848,6 +16884,46 @@ local function getVehicleSeat()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     local seat = hum and hum.SeatPart
     return seat and seat:IsA("VehicleSeat") and seat or nil
+end
+
+local function findWheelParts(model)
+    local wheels = {}
+    for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local name = string.lower(part.Name)
+            if name:find("wheel", 1, true) or name:find("tire", 1, true)
+                or name:find("tyre", 1, true) then
+                table.insert(wheels, part)
+            end
+        end
+    end
+    return wheels
+end
+
+local function setDriftEffects(model, enabled)
+    if not state.driftEffects then enabled = false end
+    local wheels = findWheelParts(model)
+    for _, wheel in ipairs(wheels) do
+        local emitter = driftEffectParts[wheel]
+        if enabled and not emitter then
+            emitter = Instance.new("ParticleEmitter")
+            emitter.Name = "KryxDriftDust"
+            emitter.Enabled = false
+            emitter.Rate = 18
+            emitter.Lifetime = NumberRange.new(0.25, 0.5)
+            emitter.Speed = NumberRange.new(2, 5)
+            emitter.SpreadAngle = Vector2.new(35, 35)
+            emitter.Size = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0.35),
+                NumberSequenceKeypoint.new(1, 0),
+            })
+            emitter.Color = ColorSequence.new(Color3.fromRGB(178, 155, 115))
+            emitter.Transparency = NumberSequence.new(0.25, 1)
+            emitter.Parent = wheel
+            driftEffectParts[wheel] = emitter
+        end
+        if emitter then emitter.Enabled = enabled end
+    end
 end
 
 local function restoreVehicleProperties()
@@ -16878,6 +16954,10 @@ local function restoreVehicleProperties()
         if effect and effect.Parent then effect:Destroy() end
     end
     vehicleExhaustParts = {}
+    for wheel, emitter in pairs(driftEffectParts) do
+        if emitter and emitter.Parent then emitter:Destroy() end
+    end
+    driftEffectParts = {}
 end
 
 local function applyVehicleHandling(seat)
@@ -16962,6 +17042,12 @@ track(runService.Heartbeat:Connect(function()
         return
     end
     applyVehicleHandling(seat)
+    local model = seat:FindFirstAncestorOfClass("Model")
+    local velocity = seat.AssemblyLinearVelocity
+    local speed = velocity.Magnitude
+    local sidewaysSpeed = math.abs(seat.CFrame.RightVector:Dot(velocity))
+    local drifting = speed > 10 and sidewaysSpeed > 5 and math.abs(seat.SteerFloat) > 0.15
+    if model then setDriftEffects(model, drifting) end
     local rootPart = seat:FindFirstAncestorOfClass("Model")
         and seat:FindFirstAncestorOfClass("Model"):FindFirstChildWhichIsA("BasePart")
     if rootPart and math.abs(seat.SteerFloat) > 0.01 then
@@ -18602,6 +18688,19 @@ vehicleTab:Toggle({
     end,
 })
 
+vehicleTab:Toggle({
+    Title = "Khói/cát khi drift",
+    Desc = "Tạo bụi ở bánh khi tốc độ ngang và góc lái đủ lớn",
+    Default = true,
+    Callback = function(s)
+        state.driftEffects = s
+        vehicleLastApply = 0
+        if not s and vehicleLastModel then
+            setDriftEffects(vehicleLastModel, false)
+        end
+    end,
+})
+
 -- ==========================================
 -- TAB 7: KHÁC
 -- ==========================================
@@ -18650,7 +18749,7 @@ miscTab:Toggle({
 
 miscTab:Toggle({
     Title = "Đồ họa tối đa",
-    Desc = "Bật Future lighting, bóng và Mesh fidelity cao trong giới hạn client",
+    Desc = "Bật chất lượng cao, bóng, Mesh fidelity và quality level nếu máy hỗ trợ",
     Default = false,
     Callback = function(s)
         if s and state.lowGraphics then
@@ -18658,6 +18757,19 @@ miscTab:Toggle({
         end
         setMaxGraphics(s)
         notify("Đồ họa", s and "Đã bật chất lượng tối đa client." or "Đã khôi phục chất lượng trước đó.", 3)
+    end,
+})
+
+miscTab:Toggle({
+    Title = "Khử răng cưa / cạnh mượt",
+    Desc = "Tùy máy: tăng quality level và RenderFidelity; Roblox không có API AA riêng",
+    Default = true,
+    Callback = function(s)
+        state.highQualityEdges = s
+        if state.maxGraphics then
+            setMaxGraphics(false)
+            setMaxGraphics(true)
+        end
     end,
 })
 
