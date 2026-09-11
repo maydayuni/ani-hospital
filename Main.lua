@@ -15823,13 +15823,18 @@ local function applyNoClip(enabled)
         return false
     end
 
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if root then
+        root.CanCollide = false
+    end
+
     for _, part in ipairs(char:GetDescendants()) do
         if part:IsA("BasePart") then
             if enabled then
                 if part:GetAttribute("KryxOriginalCanCollide") == nil then
                     part:SetAttribute("KryxOriginalCanCollide", part.CanCollide)
                 end
-                if part.CanCollide then
+                if part ~= root then
                     part.CanCollide = false
                 end
             else
@@ -15837,24 +15842,29 @@ local function applyNoClip(enabled)
                 if original ~= nil then
                     part.CanCollide = original
                     part:SetAttribute("KryxOriginalCanCollide", nil)
-                else
+                elseif not part:IsA("HumanoidRootPart") then
                     part.CanCollide = true
                 end
             end
         end
     end
 
+    if not enabled and root then
+        root.CanCollide = true
+    end
+
     return true
 end
 
-track(localPlayer.CharacterAdded:Connect(function()
-    if state.noClip then
-        task.delay(0.25, function()
-            pcall(function()
+track(localPlayer.CharacterAdded:Connect(function(newChar)
+    if not newChar then return end
+    task.delay(0.15, function()
+        pcall(function()
+            if state.noClip then
                 applyNoClip(true)
-            end)
+            end
         end)
-    end
+    end)
 end))
 local function setFullbright(enabled)
     debugLog("Fullbright", enabled and "enabled" or "disabled")
@@ -16296,11 +16306,35 @@ end)
 local function applyThirdPerson()
     local hum = getHumanoid()
     if hum then
-        hum.CameraOffset = state.thirdPerson
-            and Vector3.new(0, 3, 12)
-            or Vector3.new(0, 0, 0)
+        hum.CameraOffset = state.thirdPerson and Vector3.new(0, 2, 10) or Vector3.new(0, 0, 0)
+    end
+
+    local cam = workspace.CurrentCamera
+    if cam then
+        if state.thirdPerson then
+            cam.CameraType = Enum.CameraType.Scriptable
+        else
+            cam.CameraType = Enum.CameraType.Custom
+        end
     end
 end
+
+track(runService.RenderStepped:Connect(function()
+    if dead or not state.thirdPerson then return end
+    local char = getChar()
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local cam = workspace.CurrentCamera
+    if not root or not cam then return end
+
+    local look = root.CFrame.LookVector
+    local targetPos = root.Position + Vector3.new(-look.X * 10, 4.5, -look.Z * 10)
+    local lookAt = root.Position + Vector3.new(0, 2, 0)
+    cam.CFrame = CFrame.lookAt(targetPos, lookAt)
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.CameraOffset = Vector3.new(0, 2, 0)
+    end
+end))
 
 -- ==========================================
 -- FASTER ACTIONS (every prompt fires instantly)
@@ -16556,21 +16590,47 @@ local function isPatientModel(model)
     if model == localPlayer.Character or players:GetPlayerFromCharacter(model) then
         return false
     end
-    if not model:FindFirstChildOfClass("Humanoid") then return false end
-    if not model:FindFirstChild("HumanoidRootPart")
-        and not model:FindFirstChildWhichIsA("BasePart", true) then
+
+    local hasHumanoid = model:FindFirstChildOfClass("Humanoid") ~= nil
+    local hasBodyPart = model:FindFirstChild("HumanoidRootPart") ~= nil or model:FindFirstChildWhichIsA("BasePart", true) ~= nil
+    if not hasHumanoid and not hasBodyPart then
         return false
     end
+
     local name = string.lower(model.Name)
-    local isPatient = model:GetAttribute("Patient") == true
-        or model:GetAttribute("Skinwalker") == true
-        or model:GetAttribute("SkinwalkerEasy") == true
-        or model:GetAttribute("PenaltyWhenLettingIn") == true
-        or name:find("patient", 1, true) ~= nil
-        or name:find("npc", 1, true) ~= nil
+    local attrFlags = {
+        "Patient",
+        "IsPatient",
+        "PatientNPC",
+        "Skinwalker",
+        "SkinwalkerEasy",
+        "PenaltyWhenLettingIn",
+        "HasCameraEffect",
+        "IsNPC",
+        "NPC",
+        "Visitor",
+        "Guest",
+    }
+
+    local isPatient = false
+    for _, key in ipairs(attrFlags) do
+        if model:GetAttribute(key) == true then
+            isPatient = true
+            break
+        end
+    end
+
+    if not isPatient then
+        for _, token in ipairs({ "patient", "npc", "guest", "visitor" }) do
+            if name:find(token, 1, true) ~= nil then
+                isPatient = true
+                break
+            end
+        end
+    end
 
     if debugEnabled and isPatient then
-        debugLog("Patient candidate", model:GetFullName(), "Name=" .. model.Name, "Patient=" .. tostring(model:GetAttribute("Patient")), "Skinwalker=" .. tostring(model:GetAttribute("Skinwalker")))
+        debugLog("Patient candidate", model:GetFullName(), "Name=" .. model.Name, "Humanoid=" .. tostring(hasHumanoid), "BodyPart=" .. tostring(hasBodyPart))
     end
 
     return isPatient
@@ -16658,24 +16718,47 @@ end
 
 local function findActiveNpc()
     local folder = findDescendantByNames(workspace, { "NPCs", "NPC", "Patients", "Patient" })
+    local candidates = {}
+
     if folder then
-        if isPatientModel(folder) then return folder end
+        for _, child in ipairs(folder:GetDescendants()) do
+            if child:IsA("Model") and isPatientModel(child) then
+                table.insert(candidates, child)
+            end
+        end
         for _, child in ipairs(folder:GetChildren()) do
-            if isPatientModel(child) then
-                return child
+            if child:IsA("Model") and isPatientModel(child) then
+                table.insert(candidates, child)
             end
         end
-        for _, descendant in ipairs(folder:GetDescendants()) do
-            if isPatientModel(descendant) then
-                return descendant
-            end
+        if isPatientModel(folder) then
+            table.insert(candidates, folder)
         end
     end
+
     for _, descendant in ipairs(workspace:GetDescendants()) do
-        if isPatientModel(descendant) then
-            return descendant
+        if descendant:IsA("Model") and isPatientModel(descendant) then
+            table.insert(candidates, descendant)
         end
     end
+
+    if #candidates > 0 then
+        table.sort(candidates, function(a, b)
+            local aName = tostring(a.Name):lower()
+            local bName = tostring(b.Name):lower()
+            local aScore = 0
+            local bScore = 0
+            if aName:find("patient", 1, true) then aScore = aScore + 5 end
+            if aName:find("npc", 1, true) then aScore = aScore + 4 end
+            if a:GetAttribute("Patient") == true then aScore = aScore + 3 end
+            if bName:find("patient", 1, true) then bScore = bScore + 5 end
+            if bName:find("npc", 1, true) then bScore = bScore + 4 end
+            if b:GetAttribute("Patient") == true then bScore = bScore + 3 end
+            return aScore > bScore
+        end)
+        return candidates[1]
+    end
+
     return nil
 end
 
