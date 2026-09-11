@@ -17081,7 +17081,7 @@ end))
 -- UI (WindUI, inlined above — offline proof)
 -- ==========================================
 local window = WindUI:CreateWindow({
-    Title = "Bệnh viện động vật",
+    Title = "Súc vật bệnh viện",
     Author = "bản tối ưu",
     Theme = "Dark",
     Size = UDim2.new(0, 500, 0, 500),
