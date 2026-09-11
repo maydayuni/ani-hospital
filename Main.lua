@@ -15721,6 +15721,7 @@ local state = {
     autoHeal = false,
     mouseFree = false,
     noClip = false,
+    fly = false,
     antiAfk = true,
     fullbright = false,
     speed = 16,
@@ -16712,8 +16713,93 @@ local function fireTaskPrompt(prompt)
     return ok
 end
 
+local function scanWorkspaceNames()
+    local matches = {}
+    local tokens = {
+        "patient", "npc", "checkin", "check in", "check-in", "form", "camera",
+        "computer", "printer", "photo", "badge", "reception", "nurse", "doctor",
+        "medical", "treatment", "room", "desk", "shutter"
+    }
+
+    for _, descendant in ipairs(workspace:GetDescendants()) do
+        local name = tostring(descendant.Name)
+        local lower = string.lower(name)
+        local hits = {}
+        for _, token in ipairs(tokens) do
+            if lower:find(token, 1, true) then
+                table.insert(hits, token)
+            end
+        end
+
+        if #hits > 0 then
+            local info = string.format("%s | class=%s | hits=%s",
+                name,
+                tostring(descendant.ClassName),
+                table.concat(hits, ", "))
+            table.insert(matches, info)
+            print("[AH SCAN] " .. info)
+        end
+
+        if descendant:IsA("ProximityPrompt") then
+            local promptInfo = string.format("PROMPT %s | action=%s | object=%s",
+                tostring(descendant:GetFullName()),
+                tostring(descendant.ActionText),
+                tostring(descendant.ObjectText))
+            print("[AH SCAN] " .. promptInfo)
+            table.insert(matches, promptInfo)
+        end
+    end
+
+    return matches
+end
+
 local function findCheckinFolder()
-    return findDescendantByNames(workspace, { "Checkin", "Check-in", "Check In" })
+    local checkNames = { "CheckIn", "Checkin", "Check-in", "Check In", "CheckInDesk", "CheckInRoom", "Check In Room", "Check In Station" }
+    local found = findDescendantByNames(workspace, checkNames)
+    if found then return found end
+
+    local fallbackCandidates = {}
+    for _, descendant in ipairs(workspace:GetDescendants()) do
+        local isContainer = descendant:IsA("Model") or descendant:IsA("Folder")
+        if isContainer then
+            local name = string.lower(tostring(descendant.Name))
+            local isCheckinCandidate = name:find("checkin", 1, true)
+                or name:find("check in", 1, true)
+                or name:find("check-in", 1, true)
+                or name:find("reception", 1, true)
+                or name:find("waiting", 1, true)
+            if isCheckinCandidate then
+                table.insert(fallbackCandidates, descendant)
+            end
+        end
+    end
+
+    if #fallbackCandidates > 0 then
+        table.sort(fallbackCandidates, function(a, b)
+            local aName = string.lower(tostring(a.Name))
+            local bName = string.lower(tostring(b.Name))
+            if aName:find("checkin", 1, true) and not bName:find("checkin", 1, true) then return true end
+            if bName:find("checkin", 1, true) and not aName:find("checkin", 1, true) then return false end
+            return aName < bName
+        end)
+        return fallbackCandidates[1]
+    end
+
+    for _, descendant in ipairs(workspace:GetDescendants()) do
+        if descendant:IsA("Model") or descendant:IsA("Folder") then
+            local lower = string.lower(descendant.Name)
+            local hasCheckStep = lower:find("form", 1, true) or lower:find("camera", 1, true)
+                or lower:find("computer", 1, true) or lower:find("printer", 1, true)
+                or lower:find("photo", 1, true) or lower:find("badge", 1, true)
+            if hasCheckStep and descendant.Parent then
+                return descendant.Parent
+            end
+        end
+    end
+
+    print("[AH SCAN] No check-in folder matched. Full workspace scan started.")
+    scanWorkspaceNames()
+    return nil
 end
 
 local function findActiveNpc()
@@ -16768,6 +16854,9 @@ end
 
 local function diagnoseAutomation()
     debugLog("Diagnostic started")
+    print("[AH SCAN] Running exhaustive workspace scan for patient/checkin names.")
+    scanWorkspaceNames()
+
     local patientCount = 0
     local promptCount = 0
     local patientNames = {}
@@ -16857,6 +16946,8 @@ local function autoTasksLoop(runId)
     end
     automationBusy = true
     setAutomationPhase("Auto Tasks")
+    local checkinFolder = findCheckinFolder()
+    debugLog("Auto Tasks checkin resolved", checkinFolder and checkinFolder:GetFullName() or "nil")
     -- invisible helper blocks (marker spots from the original dance)
     local cubo1 = Instance.new("Part")
     cubo1.Name = "Cubo1Ref"
@@ -16876,7 +16967,7 @@ local function autoTasksLoop(runId)
             logError("AutoTasks", "No active patient NPC found.", checkinFolder and checkinFolder:GetFullName() or "No checkin folder")
         elseif not checkinFolder then
             taskDiagnostic("Không tìm thấy khu Check-in trong Workspace.")
-            logError("AutoTasks", "Checkin folder missing.")
+            logError("AutoTasks", "Checkin folder missing.", npc:GetFullName())
         else
                 debugLog("Auto Tasks target", npc:GetFullName(), checkinFolder:GetFullName())
                 local isAnom = (npc:GetAttribute("Skinwalker") == true)
@@ -17607,6 +17698,32 @@ end
 -- TAB 6: KHÁC
 -- ==========================================
 local miscTab = window:Tab({ Title = "Khác", Icon = "lucide:settings-2" })
+
+miscTab:Button({
+    Title = "⬆️ Bay +",
+    Desc = "Nâng nhân vật lên cao hơn một chút",
+    Icon = "lucide:arrow-up",
+    Callback = function()
+        local root = getRoot()
+        if root then
+            root.CFrame = root.CFrame + Vector3.new(0, 6, 0)
+            notify("✈️", "Bay lên +6", 1.5)
+        end
+    end,
+})
+
+miscTab:Button({
+    Title = "⬇️ Bay -",
+    Desc = "Hạ nhân vật xuống thấp hơn một chút",
+    Icon = "lucide:arrow-down",
+    Callback = function()
+        local root = getRoot()
+        if root then
+            root.CFrame = root.CFrame + Vector3.new(0, -6, 0)
+            notify("✈️", "Bay xuống -6", 1.5)
+        end
+    end,
+})
 
 miscTab:Button({
     Title = "♻️ Unload Script",
