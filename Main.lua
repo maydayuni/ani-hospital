@@ -15735,6 +15735,12 @@ local state = {
     fixedFlight = false,
     vehicleGrip = 1,
     vehicleBrake = 1,
+    vehicleLaunch = 1,
+    vehicleSteering = 1,
+    vehicleGlass = 0.65,
+    vehicleExhaust = false,
+    vehicleBrakeHeld = false,
+    maxGraphics = false,
     speed = 16,
 }
 
@@ -15761,9 +15767,17 @@ local playerEspLastUpdate = 0
 local fixedFlightCFrame = nil
 local lowGraphicsRunId = 0
 local vehicleSavedProperties = {}
+local vehicleSavedVisuals = {}
 local vehicleLastModel = nil
 local vehicleLastGrip = nil
 local vehicleLastApply = 0
+local vehicleLastLaunch = nil
+local vehicleLastSteering = nil
+local vehicleLastGlass = nil
+local vehicleLastExhaust = nil
+local vehicleExhaustParts = {}
+local savedMaxGraphics = nil
+local savedMaxPartSettings = {}
 local automationBusy = false
 local automationPhase = "Idle"
 local debugEnabled = false
@@ -16264,6 +16278,59 @@ local function applyFov(value)
     if savedCameraFov == nil then savedCameraFov = cam.FieldOfView end
     cam.FieldOfView = state.fov
     return true
+end
+
+local function setMaxGraphics(enabled)
+    state.maxGraphics = enabled
+    if enabled then
+        if not savedMaxGraphics then
+            savedMaxGraphics = {
+                GlobalShadows = lighting.GlobalShadows,
+                Technology = lighting.Technology,
+                EnvironmentDiffuseScale = lighting.EnvironmentDiffuseScale,
+                EnvironmentSpecularScale = lighting.EnvironmentSpecularScale,
+                TerrainDecoration = workspace.Terrain.Decoration,
+            }
+        end
+        pcall(function() lighting.GlobalShadows = true end)
+        pcall(function() lighting.Technology = Enum.Technology.Future end)
+        pcall(function() lighting.EnvironmentDiffuseScale = 1 end)
+        pcall(function() lighting.EnvironmentSpecularScale = 1 end)
+        pcall(function() workspace.Terrain.Decoration = true end)
+        for _, instance in ipairs(workspace:GetDescendants()) do
+            if instance:IsA("MeshPart") then
+                if savedMaxPartSettings[instance] == nil then
+                    savedMaxPartSettings[instance] = {
+                        RenderFidelity = instance.RenderFidelity,
+                        CastShadow = instance.CastShadow,
+                    }
+                end
+                pcall(function() instance.RenderFidelity = Enum.RenderFidelity.Precise end)
+                pcall(function() instance.CastShadow = true end)
+            elseif instance:IsA("BasePart") then
+                if savedMaxPartSettings[instance] == nil then
+                    savedMaxPartSettings[instance] = { CastShadow = instance.CastShadow }
+                end
+                pcall(function() instance.CastShadow = true end)
+            end
+        end
+    elseif savedMaxGraphics then
+        for property, value in pairs(savedMaxGraphics) do
+            if property ~= "TerrainDecoration" then
+                pcall(function() lighting[property] = value end)
+            end
+        end
+        pcall(function() workspace.Terrain.Decoration = savedMaxGraphics.TerrainDecoration end)
+        for instance, properties in pairs(savedMaxPartSettings) do
+            if instance and instance.Parent then
+                for property, value in pairs(properties) do
+                    pcall(function() instance[property] = value end)
+                end
+            end
+        end
+        savedMaxPartSettings = {}
+        savedMaxGraphics = nil
+    end
 end
 
 local function processLowGraphicsBatch(runId)
@@ -16790,9 +16857,27 @@ local function restoreVehicleProperties()
         end
     end
     vehicleSavedProperties = {}
+    for part, values in pairs(vehicleSavedVisuals) do
+        if part and part.Parent then
+            pcall(function()
+                part.Color = values.Color
+                part.Transparency = values.Transparency
+                part.Material = values.Material
+            end)
+        end
+    end
+    vehicleSavedVisuals = {}
     vehicleLastModel = nil
     vehicleLastGrip = nil
     vehicleLastApply = 0
+    vehicleLastLaunch = nil
+    vehicleLastSteering = nil
+    vehicleLastGlass = nil
+    vehicleLastExhaust = nil
+    for part, effect in pairs(vehicleExhaustParts) do
+        if effect and effect.Parent then effect:Destroy() end
+    end
+    vehicleExhaustParts = {}
 end
 
 local function applyVehicleHandling(seat)
@@ -16802,30 +16887,71 @@ local function applyVehicleHandling(seat)
         restoreVehicleProperties()
     end
     if model == vehicleLastModel and vehicleLastGrip == state.vehicleGrip
+        and vehicleLastLaunch == state.vehicleLaunch
+        and vehicleLastSteering == state.vehicleSteering
+        and vehicleLastGlass == state.vehicleGlass
+        and vehicleLastExhaust == state.vehicleExhaust
         and os.clock() - vehicleLastApply < 0.5 then
         return
     end
     vehicleLastModel = model
     vehicleLastGrip = state.vehicleGrip
+    vehicleLastLaunch = state.vehicleLaunch
+    vehicleLastSteering = state.vehicleSteering
+    vehicleLastGlass = state.vehicleGlass
+    vehicleLastExhaust = state.vehicleExhaust
     vehicleLastApply = os.clock()
     for _, part in ipairs(model:GetDescendants()) do
         if part:IsA("BasePart") then
             if vehicleSavedProperties[part] == nil then
                 vehicleSavedProperties[part] = part.CustomPhysicalProperties
             end
-            local grip = math.clamp(state.vehicleGrip, 1, 3)
+            local grip = math.clamp(state.vehicleGrip, 1, 10)
             local physical = part.CurrentPhysicalProperties
             part.CustomPhysicalProperties = PhysicalProperties.new(
                 physical.Density,
-                math.clamp(0.7 * grip, 0.7, 2),
+                math.clamp(0.7 + (grip - 1) * 0.15, 0.7, 2),
                 physical.Elasticity,
                 physical.FrictionWeight,
                 physical.ElasticityWeight
             )
+            local partName = string.lower(part.Name)
+            if partName:find("window", 1, true) or partName:find("glass", 1, true)
+                or partName:find("windshield", 1, true) then
+                if vehicleSavedVisuals[part] == nil then
+                    vehicleSavedVisuals[part] = {
+                        Color = part.Color,
+                        Transparency = part.Transparency,
+                        Material = part.Material,
+                    }
+                end
+                part.Color = Color3.fromRGB(18, 24, 30)
+                part.Transparency = math.clamp(state.vehicleGlass, 0.05, 0.9)
+                part.Material = Enum.Material.Glass
+            end
         end
     end
-    pcall(function() seat.MaxSpeed = math.max(seat.MaxSpeed, 60 * state.vehicleGrip) end)
-    pcall(function() seat.Torque = math.max(seat.Torque, 10000 * state.vehicleGrip) end)
+    pcall(function() seat.MaxSpeed = math.max(seat.MaxSpeed, 60 * state.vehicleLaunch) end)
+    pcall(function() seat.Torque = math.max(seat.Torque, 10000 * state.vehicleLaunch) end)
+
+    if state.vehicleExhaust then
+        for _, part in ipairs(model:GetDescendants()) do
+            if part:IsA("BasePart") then
+                local name = string.lower(part.Name)
+                if (name:find("exhaust", 1, true) or name:find("muffler", 1, true)
+                    or name:find("pipe", 1, true)) and not vehicleExhaustParts[part] then
+                    local fire = Instance.new("Fire")
+                    fire.Name = "KryxVehicleExhaust"
+                    fire.Heat = 4
+                    fire.Size = 3
+                    fire.Color = Color3.fromRGB(255, 125, 25)
+                    fire.SecondaryColor = Color3.fromRGB(255, 230, 120)
+                    fire.Parent = part
+                    vehicleExhaustParts[part] = fire
+                end
+            end
+        end
+    end
 end
 
 track(runService.Heartbeat:Connect(function()
@@ -16836,10 +16962,32 @@ track(runService.Heartbeat:Connect(function()
         return
     end
     applyVehicleHandling(seat)
-    if seat.Throttle == 0 and state.vehicleBrake > 1 then
+    local rootPart = seat:FindFirstAncestorOfClass("Model")
+        and seat:FindFirstAncestorOfClass("Model"):FindFirstChildWhichIsA("BasePart")
+    if rootPart and math.abs(seat.SteerFloat) > 0.01 then
+        rootPart.AssemblyAngularVelocity = Vector3.new(
+            0,
+            seat.SteerFloat * state.vehicleSteering * 1.5,
+            0
+        )
+    end
+    if state.vehicleBrakeHeld and state.vehicleBrake > 1 then
         local velocity = seat.AssemblyLinearVelocity
-        local brake = math.clamp(1 - (state.vehicleBrake - 1) * 0.08, 0.55, 0.98)
+        local brake = math.clamp(1 - state.vehicleBrake * 0.035, 0.55, 0.96)
         seat.AssemblyLinearVelocity = velocity * brake
+    end
+end))
+
+track(userInputService.InputBegan:Connect(function(input, processed)
+    if dead or processed then return end
+    if input.KeyCode == Enum.KeyCode.S then
+        state.vehicleBrakeHeld = true
+    end
+end))
+
+track(userInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.S then
+        state.vehicleBrakeHeld = false
     end
 end))
 
@@ -18356,6 +18504,107 @@ end
 -- ==========================================
 -- TAB 6: KHÁC
 -- ==========================================
+local vehicleTab = window:Tab({ Title = "Xe", Icon = "lucide:car-front" })
+
+vehicleTab:Section({
+    Title = "Điều khiển xe",
+    Text = "Các mức chỉ áp dụng khi đang ngồi VehicleSeat; phanh giữ bằng phím S.",
+})
+
+vehicleTab:Input({
+    Title = "Độ bám đường",
+    Desc = "Mức 1-10; mức cao bám đường hơn",
+    Placeholder = "Ví dụ: 6",
+    Value = tostring(state.vehicleGrip),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.vehicleGrip = math.clamp(value, 1, 10)
+            notify("Xe", "Độ bám: " .. tostring(state.vehicleGrip), 2)
+        end
+    end,
+})
+
+vehicleTab:Input({
+    Title = "Phanh chủ động",
+    Desc = "Mức 1-5; giữ S để phanh mạnh hơn, không bó bánh khi nhả ga",
+    Placeholder = "Ví dụ: 3",
+    Value = tostring(state.vehicleBrake),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.vehicleBrake = math.clamp(value, 1, 5)
+            notify("Xe", "Phanh: " .. tostring(state.vehicleBrake), 2)
+        end
+    end,
+})
+
+vehicleTab:Input({
+    Title = "Đề / tăng tốc",
+    Desc = "Mức 1-5; tăng giới hạn tốc độ và mô-men đề",
+    Placeholder = "Ví dụ: 3",
+    Value = tostring(state.vehicleLaunch),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.vehicleLaunch = math.clamp(value, 1, 5)
+            notify("Xe", "Đề: " .. tostring(state.vehicleLaunch), 2)
+        end
+    end,
+})
+
+vehicleTab:Input({
+    Title = "Góc lái",
+    Desc = "Mức 1-3; tăng hỗ trợ quay đầu xe",
+    Placeholder = "Ví dụ: 2",
+    Value = tostring(state.vehicleSteering),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.vehicleSteering = math.clamp(value, 1, 3)
+            notify("Xe", "Góc lái: " .. tostring(state.vehicleSteering), 2)
+        end
+    end,
+})
+
+vehicleTab:Input({
+    Title = "Kính xe tối",
+    Desc = "Mức 0.05-0.9; số cao thì kính trong hơn",
+    Placeholder = "Ví dụ: 0.65",
+    Value = tostring(state.vehicleGlass),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.vehicleGlass = math.clamp(value, 0.05, 0.9)
+            notify("Xe", "Độ trong kính: " .. tostring(state.vehicleGlass), 2)
+        end
+    end,
+})
+
+vehicleTab:Toggle({
+    Title = "Bô nẹt lửa",
+    Desc = "Tạo lửa local ở các part có tên exhaust, muffler hoặc pipe",
+    Default = false,
+    Callback = function(s)
+        state.vehicleExhaust = s
+        if not s then
+            for part, effect in pairs(vehicleExhaustParts) do
+                if effect and effect.Parent then effect:Destroy() end
+                vehicleExhaustParts[part] = nil
+            end
+        end
+        vehicleLastApply = 0
+    end,
+})
+
+-- ==========================================
+-- TAB 7: KHÁC
+-- ==========================================
 local miscTab = window:Tab({ Title = "Khác", Icon = "lucide:settings-2" })
 
 miscTab:Button({
@@ -18390,38 +18639,25 @@ miscTab:Toggle({
     Default = false,
     Callback = function(s)
         state.fixedFlight = s
-        fixedFlightCFrame = s and (getRoot() and getRoot().CFrame or nil) or nil
+        local root = getRoot()
+        fixedFlightCFrame = s and (root and (root.CFrame + Vector3.new(0, 6, 0)) or nil) or nil
+        if fixedFlightCFrame and root then
+            root.CFrame = fixedFlightCFrame
+        end
         notify("Bay", s and "Đã khóa vị trí hiện tại." or "Đã thả vị trí.", 2)
     end,
 })
 
-miscTab:Input({
-    Title = "Độ bám xe",
-    Desc = "Mức 1-3; chỉ áp dụng khi đang ngồi VehicleSeat",
-    Placeholder = "Ví dụ: 1.5",
-    Value = tostring(state.vehicleGrip),
-    Type = "Input",
-    Callback = function(text)
-        local value = tonumber(text)
-        if value then
-            state.vehicleGrip = math.clamp(value, 1, 3)
-            notify("Xe", "Độ bám: " .. tostring(state.vehicleGrip), 2)
+miscTab:Toggle({
+    Title = "Đồ họa tối đa",
+    Desc = "Bật Future lighting, bóng và Mesh fidelity cao trong giới hạn client",
+    Default = false,
+    Callback = function(s)
+        if s and state.lowGraphics then
+            setLowGraphics(false)
         end
-    end,
-})
-
-miscTab:Input({
-    Title = "Phanh xe",
-    Desc = "Mức 1-5; số càng cao thì xe dừng càng nhanh",
-    Placeholder = "Ví dụ: 3",
-    Value = tostring(state.vehicleBrake),
-    Type = "Input",
-    Callback = function(text)
-        local value = tonumber(text)
-        if value then
-            state.vehicleBrake = math.clamp(value, 1, 5)
-            notify("Xe", "Phanh: " .. tostring(state.vehicleBrake), 2)
-        end
+        setMaxGraphics(s)
+        notify("Đồ họa", s and "Đã bật chất lượng tối đa client." or "Đã khôi phục chất lượng trước đó.", 3)
     end,
 })
 
@@ -18430,6 +18666,9 @@ miscTab:Toggle({
     Desc = "Tắt hiệu ứng, bóng đổ, ESP và giảm quét nền để nhẹ máy hơn",
     Default = false,
     Callback = function(s)
+        if s and state.maxGraphics then
+            setMaxGraphics(false)
+        end
         setLowGraphics(s)
         notify("Đồ họa", s and "Đã bật chế độ tối ưu nhẹ máy." or "Đã khôi phục hiệu ứng ban đầu.", 3)
     end,
@@ -18473,6 +18712,8 @@ genv.__AHOSP_CLEANUP = function()
     autoHealRunId = autoHealRunId + 1
     state.fullbright = false
     setFullbright(false)
+    state.maxGraphics = false
+    setMaxGraphics(false)
     state.lowGraphics = false
     setLowGraphics(false)
     state.noClip = false
@@ -18489,15 +18730,8 @@ genv.__AHOSP_CLEANUP = function()
     state.followTarget = nil
     state.fixedFlight = false
     fixedFlightCFrame = nil
-    for part, properties in pairs(vehicleSavedProperties) do
-        if part and part.Parent then
-            pcall(function() part.CustomPhysicalProperties = properties end)
-        end
-    end
-    vehicleSavedProperties = {}
-    vehicleLastModel = nil
-    vehicleLastGrip = nil
-    vehicleLastApply = 0
+    restoreVehicleProperties()
+    state.vehicleBrakeHeld = false
     state.fasterActions = false
     applyFasterActions()
     promptDurations = {}
