@@ -15726,6 +15726,7 @@ local state = {
     followPlayer = false,
     followTarget = nil,
     fly = false,
+    flySpeed = 40,
     antiAfk = true,
     fullbright = false,
     lowGraphics = false,
@@ -15743,6 +15744,7 @@ local state = {
     maxGraphics = false,
     highQualityEdges = true,
     driftEffects = true,
+    language = "vi",
     speed = 16,
 }
 
@@ -15783,6 +15785,7 @@ local savedMaxPartSettings = {}
 local savedQualityLevel = nil
 local maxGraphicsDescendantConn = nil
 local driftEffectParts = {}
+local flightKeys = {}
 local automationBusy = false
 local automationPhase = "Idle"
 local debugEnabled = false
@@ -16877,6 +16880,57 @@ track(runService.RenderStepped:Connect(function()
             * CFrame.Angles(current:ToEulerAnglesXYZ())
         root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z)
     end
+end))
+
+track(runService.RenderStepped:Connect(function(deltaTime)
+    if dead or not state.fly then return end
+    local root = getRoot()
+    local cam = workspace.CurrentCamera
+    if not root or not cam then return end
+
+    local direction = Vector3.zero
+    local look = cam.CFrame.LookVector
+    local right = cam.CFrame.RightVector
+    if flightKeys.Forward then direction += look end
+    if flightKeys.Back then direction -= look end
+    if flightKeys.Right then direction += right end
+    if flightKeys.Left then direction -= right end
+    if flightKeys.Up then direction += Vector3.yAxis end
+    if flightKeys.Down then direction -= Vector3.yAxis end
+
+    if direction.Magnitude > 0 then
+        root.CFrame = root.CFrame + direction.Unit * state.flySpeed * deltaTime
+        root.AssemblyLinearVelocity = Vector3.zero
+    end
+end))
+
+track(userInputService.InputBegan:Connect(function(input, processed)
+    if dead or processed then return end
+    local keyMap = {
+        [Enum.KeyCode.W] = "Forward",
+        [Enum.KeyCode.S] = "Back",
+        [Enum.KeyCode.A] = "Left",
+        [Enum.KeyCode.D] = "Right",
+        [Enum.KeyCode.Space] = "Up",
+        [Enum.KeyCode.LeftControl] = "Down",
+        [Enum.KeyCode.RightControl] = "Down",
+    }
+    local key = keyMap[input.KeyCode]
+    if key then flightKeys[key] = true end
+end))
+
+track(userInputService.InputEnded:Connect(function(input)
+    local keyMap = {
+        [Enum.KeyCode.W] = "Forward",
+        [Enum.KeyCode.S] = "Back",
+        [Enum.KeyCode.A] = "Left",
+        [Enum.KeyCode.D] = "Right",
+        [Enum.KeyCode.Space] = "Up",
+        [Enum.KeyCode.LeftControl] = "Down",
+        [Enum.KeyCode.RightControl] = "Down",
+    }
+    local key = keyMap[input.KeyCode]
+    if key then flightKeys[key] = false end
 end))
 
 local function getVehicleSeat()
@@ -18043,6 +18097,24 @@ local function fetchObject(itemName)
     return false
 end
 
+local function scanUsableObjects()
+    local found = {}
+    for _, prompt in ipairs(workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") then
+            local label = prompt.ObjectText ~= "" and prompt.ObjectText or prompt.ActionText
+            if label ~= "" then
+                table.insert(found, string.format("%s | %s", label, prompt:GetFullName()))
+            end
+        end
+    end
+    print("[AH OBJECTS] " .. tostring(#found) .. " usable prompts")
+    for _, entry in ipairs(found) do
+        print("[AH OBJECTS] " .. entry)
+    end
+    notify("Đồ vật", "Đã quét " .. tostring(#found) .. " đồ vật/prompt. Xem log để biết tên thật.", 4)
+    return found
+end
+
 -- ==========================================
 -- ROOM TELEPORTS (every wall of the hospital mapped)
 -- ==========================================
@@ -18504,7 +18576,14 @@ autoTab:Button({
 -- ==========================================
 -- TAB 4: ITEMS
 -- ==========================================
-local itemsTab = window:Tab({ Title = "Vật phẩm", Icon = "lucide:package" })
+local itemsTab = window:Tab({ Title = "Đồ vật", Icon = "lucide:package" })
+
+itemsTab:Button({
+    Title = "Quét đồ vật có thể dùng",
+    Desc = "Liệt kê prompt để biết đồ nào có thể cầm, dùng hoặc đặt",
+    Icon = "lucide:scan-search",
+    Callback = scanUsableObjects,
+})
 
 itemsTab:Button({
     Title = "🥤 Get Run Fast Cola",
@@ -18706,29 +18785,46 @@ vehicleTab:Toggle({
 -- ==========================================
 local miscTab = window:Tab({ Title = "Khác", Icon = "lucide:settings-2" })
 
-miscTab:Button({
-    Title = "⬆️ Bay +",
-    Desc = "Nâng nhân vật lên cao hơn một chút",
-    Icon = "lucide:arrow-up",
-    Callback = function()
-        local root = getRoot()
-        if root then
-            root.CFrame = root.CFrame + Vector3.new(0, 6, 0)
-            notify("✈️", "Bay lên +6", 1.5)
+miscTab:Toggle({
+    Title = "Bay tự do",
+    Desc = "W/S/A/D bay theo camera, Space bay lên, Ctrl bay xuống",
+    Default = false,
+    Callback = function(s)
+        state.fly = s
+        if not s then
+            flightKeys = {}
+            local root = getRoot()
+            if root then root.AssemblyLinearVelocity = Vector3.zero end
+        end
+        notify("Bay", s and "Đã bật bay tự do." or "Đã tắt bay tự do.", 2)
+    end,
+})
+
+miscTab:Input({
+    Title = "Tốc độ bay",
+    Desc = "Tốc độ di chuyển khi bay, từ 1 đến 200",
+    Placeholder = "Ví dụ: 40",
+    Value = tostring(state.flySpeed),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.flySpeed = math.clamp(value, 1, 200)
+            notify("Bay", "Tốc độ bay: " .. tostring(state.flySpeed), 2)
         end
     end,
 })
 
-miscTab:Button({
-    Title = "⬇️ Bay -",
-    Desc = "Hạ nhân vật xuống thấp hơn một chút",
-    Icon = "lucide:arrow-down",
-    Callback = function()
-        local root = getRoot()
-        if root then
-            root.CFrame = root.CFrame + Vector3.new(0, -6, 0)
-            notify("✈️", "Bay xuống -6", 1.5)
-        end
+miscTab:Dropdown({
+    Title = "Ngôn ngữ / Language",
+    Desc = "Chọn ngôn ngữ giao diện",
+    Values = { "Tiếng Việt", "English" },
+    Value = "Tiếng Việt",
+    Callback = function(value)
+        state.language = value == "English" and "en" or "vi"
+        notify("Language", state.language == "en"
+            and "English selected. Existing labels require reload to fully translate."
+            or "Đã chọn Tiếng Việt. Một số nhãn cần chạy lại script để đổi hoàn toàn.", 4)
     end,
 })
 
@@ -18842,6 +18938,8 @@ genv.__AHOSP_CLEANUP = function()
     state.followTarget = nil
     state.fixedFlight = false
     fixedFlightCFrame = nil
+    state.fly = false
+    flightKeys = {}
     restoreVehicleProperties()
     state.vehicleBrakeHeld = false
     state.fasterActions = false
