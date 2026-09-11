@@ -17499,6 +17499,51 @@ playerTab:Toggle({
 })
 
 playerTab:Toggle({
+    Title = "Thu nhỏ nhân vật",
+    Desc = "Co người lại để dễ đi qua chỗ hẹp hoặc di chuyển tự do hơn",
+    Default = false,
+    Callback = function(s)
+        local char = getChar()
+        if not char then return end
+
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if not humanoid then return end
+
+        local scale = humanoid:FindFirstChild("BodyHeightScale")
+            or humanoid:FindFirstChild("BodyWidthScale")
+            or humanoid:FindFirstChild("BodyDepthScale")
+
+        if s then
+            if not humanoid:GetAttribute("KryxOriginalBodyScale") then
+                humanoid:SetAttribute("KryxOriginalBodyScale", tostring(scale and scale.Value or 1))
+            end
+
+            for _, child in ipairs(humanoid:GetChildren()) do
+                if child:IsA("NumberValue") and child.Name:find("Scale", 1, true) then
+                    local original = child:GetAttribute("KryxOriginalValue")
+                    if original == nil then
+                        child:SetAttribute("KryxOriginalValue", child.Value)
+                    end
+                    child.Value = math.min(child.Value, 0.5)
+                end
+            end
+            notify("👤", "Nhân vật đã thu nhỏ lại.", 2)
+        else
+            for _, child in ipairs(humanoid:GetChildren()) do
+                if child:IsA("NumberValue") and child.Name:find("Scale", 1, true) then
+                    local original = child:GetAttribute("KryxOriginalValue")
+                    if original ~= nil then
+                        child.Value = original
+                        child:SetAttribute("KryxOriginalValue", nil)
+                    end
+                end
+            end
+            notify("👤", "Nhân vật đã phục hồi kích thước ban đầu.", 2)
+        end
+    end,
+})
+
+playerTab:Toggle({
     Title = "Độ sáng ban đêm",
     Desc = "Tăng độ sáng và khôi phục đúng thiết lập cũ khi tắt",
     Default = false,
