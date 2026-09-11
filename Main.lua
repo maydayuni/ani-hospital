@@ -15720,6 +15720,7 @@ local state = {
     autoTasks = false,
     autoHeal = false,
     mouseFree = false,
+    noClip = false,
     antiAfk = true,
     fullbright = false,
     speed = 16,
@@ -15781,6 +15782,21 @@ local function copyDebugLog()
     return false
 end
 
+local function logError(tag, message, ...)
+    local parts = { ... }
+    local extra = ""
+    if #parts > 0 then
+        local values = {}
+        for i, value in ipairs(parts) do
+            values[i] = tostring(value)
+        end
+        extra = " | " .. table.concat(values, " | ")
+    end
+    local line = string.format("[AH ERROR][%s] %s%s", tostring(tag), tostring(message), extra)
+    print(line)
+    debugLog("ERROR " .. tostring(tag), tostring(message), unpack(parts))
+end
+
 notify = function(t, c, d)
     pcall(function()
         WindUI:Notify({ Title = t, Content = c, Duration = d or 3 })
@@ -15798,6 +15814,48 @@ local function getHumanoid()
     return c and c:FindFirstChildOfClass("Humanoid")
 end
 
+local function applyNoClip(enabled)
+    state.noClip = enabled
+    debugLog("NoClip", enabled and "enabled" or "disabled")
+    local char = getChar()
+    if not char then
+        logError("NoClip", "Character not found while toggling NoClip")
+        return false
+    end
+
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if enabled then
+                if part:GetAttribute("KryxOriginalCanCollide") == nil then
+                    part:SetAttribute("KryxOriginalCanCollide", part.CanCollide)
+                end
+                if part.CanCollide then
+                    part.CanCollide = false
+                end
+            else
+                local original = part:GetAttribute("KryxOriginalCanCollide")
+                if original ~= nil then
+                    part.CanCollide = original
+                    part:SetAttribute("KryxOriginalCanCollide", nil)
+                else
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+
+    return true
+end
+
+track(localPlayer.CharacterAdded:Connect(function()
+    if state.noClip then
+        task.delay(0.25, function()
+            pcall(function()
+                applyNoClip(true)
+            end)
+        end)
+    end
+end))
 local function setFullbright(enabled)
     debugLog("Fullbright", enabled and "enabled" or "disabled")
     if enabled then
@@ -16504,12 +16562,18 @@ local function isPatientModel(model)
         return false
     end
     local name = string.lower(model.Name)
-    return model:GetAttribute("Patient") == true
+    local isPatient = model:GetAttribute("Patient") == true
         or model:GetAttribute("Skinwalker") == true
         or model:GetAttribute("SkinwalkerEasy") == true
         or model:GetAttribute("PenaltyWhenLettingIn") == true
         or name:find("patient", 1, true) ~= nil
         or name:find("npc", 1, true) ~= nil
+
+    if debugEnabled and isPatient then
+        debugLog("Patient candidate", model:GetFullName(), "Name=" .. model.Name, "Patient=" .. tostring(model:GetAttribute("Patient")), "Skinwalker=" .. tostring(model:GetAttribute("Skinwalker")))
+    end
+
+    return isPatient
 end
 
 local function findDescendantByNames(root, names)
@@ -16559,19 +16623,32 @@ local function findTaskPrompt(root, targetName)
 end
 
 local function fireTaskPrompt(prompt)
-    if not prompt or not prompt:IsA("ProximityPrompt") or prompt.Enabled == false then
-        debugLog("Prompt skipped", "missing or disabled")
+    if not prompt then
+        logError("Prompt", "Attempted to fire nil prompt")
+        return false
+    end
+    if not prompt:IsA("ProximityPrompt") then
+        logError("Prompt", "Object is not a ProximityPrompt", tostring(prompt.ClassName), prompt:GetFullName())
+        return false
+    end
+    if prompt.Enabled == false then
+        debugLog("Prompt skipped", "disabled", getPromptDescription(prompt))
         return false
     end
     if not fireproximityprompt then
-        debugLog("Prompt failed", "fireproximityprompt unavailable", getPromptDescription(prompt))
+        logError("Prompt", "fireproximityprompt unavailable", getPromptDescription(prompt))
         notify("Auto Tasks", "Môi trường hiện tại không hỗ trợ fireproximityprompt.", 4)
         return false
     end
-    local ok = pcall(function()
+    local ok, err = pcall(function()
         fireproximityprompt(prompt)
     end)
-    debugLog(ok and "Prompt fired" or "Prompt error", getPromptDescription(prompt))
+    if ok then
+        debugLog("Prompt fired", getPromptDescription(prompt), "enabled=" .. tostring(prompt.Enabled))
+    else
+        logError("Prompt", "fireproximityprompt raised an error", getPromptDescription(prompt), err)
+        debugLog("Prompt error", getPromptDescription(prompt), tostring(err))
+    end
     return ok
 end
 
@@ -16713,34 +16790,41 @@ local function autoTasksLoop(runId)
         local checkinFolder = findCheckinFolder()
         if not npc then
             taskDiagnostic("Không tìm thấy NPC bệnh nhân đang hoạt động.")
+            logError("AutoTasks", "No active patient NPC found.", checkinFolder and checkinFolder:GetFullName() or "No checkin folder")
         elseif not checkinFolder then
             taskDiagnostic("Không tìm thấy khu Check-in trong Workspace.")
+            logError("AutoTasks", "Checkin folder missing.")
         else
                 debugLog("Auto Tasks target", npc:GetFullName(), checkinFolder:GetFullName())
                 local isAnom = (npc:GetAttribute("Skinwalker") == true)
                     or (npc:GetAttribute("SkinwalkerEasy") == true)
                     or (npc:GetAttribute("PenaltyWhenLettingIn") == true)
                     or (npc:GetAttribute("HasCameraEffect") == true)
+                debugLog("Auto Tasks patient status", npc:GetFullName(), "anomaly=" .. tostring(isAnom), "patient=" .. tostring(npc:GetAttribute("Patient")))
                 if isAnom then
                     -- skinwalker at the door? shutter SLAMS
                     local shutter = findDescendantByNames(checkinFolder, { "ShutterButton", "Shutter" })
                     local pp = findPrompt(shutter)
                     if pp then
+                        debugLog("Auto Tasks skinwalker shutter", pp:GetFullName())
                         fireTaskPrompt(pp)
                         task.wait(4)
                         fireTaskPrompt(pp)
                     else
                         taskDiagnostic("Không tìm thấy nút đóng cửa cho NPC bất thường.")
+                        logError("AutoTasks", "Skinwalker shutter missing", checkinFolder:GetFullName())
                     end
                 else
                     for idx, name in ipairs(checkinSubTargets) do
                         if not state.autoTasks or dead then break end
                         local pp = findTaskPrompt(checkinFolder, name)
                         if pp then
+                            debugLog("Auto Tasks step", idx, name, pp:GetFullName())
                             doTaskAtPrompt(pp, idx)
                             task.wait(1.4)
                         else
                             taskDiagnostic("Không tìm thấy bước Check-in: " .. name)
+                            logError("AutoTasks", "Missing check-in prompt step", name, checkinFolder:GetFullName())
                         end
                     end
                     task.wait(2)
@@ -17231,6 +17315,16 @@ playerTab:Toggle({
 })
 
 playerTab:Toggle({
+    Title = "NoClip",
+    Desc = "Bật chế độ đi xuyên vật cản và vượt tường",
+    Default = false,
+    Callback = function(s)
+        state.noClip = s
+        applyNoClip(s)
+    end,
+})
+
+playerTab:Toggle({
     Title = "Độ sáng ban đêm",
     Desc = "Tăng độ sáng và khôi phục đúng thiết lập cũ khi tắt",
     Default = false,
@@ -17454,6 +17548,8 @@ genv.__AHOSP_CLEANUP = function()
     autoHealRunId = autoHealRunId + 1
     state.fullbright = false
     setFullbright(false)
+    state.noClip = false
+    applyNoClip(false)
     state.fasterActions = false
     applyFasterActions()
     promptDurations = {}
