@@ -15742,7 +15742,6 @@ local minigameClicked = {}
 local minigameQueue = {}
 local sanityConns = {}
 local helperParts = {}
-local lowGraphicsProxyParts = {}
 local worldScanDirty = true
 local cachedCandidates = {}
 local cachedPrompts = {}
@@ -15754,7 +15753,6 @@ local savedTerrainColors = {}
 local savedLowLighting = nil
 local savedCameraFov = nil
 local lowGraphicsDescendantConn = nil
-local proxyModels = {}
 local noClipLastUpdate = 0
 local playerEspLastUpdate = 0
 local automationBusy = false
@@ -16216,43 +16214,14 @@ end
 
 local function simplifyDecorationModel(model)
     if not state.lowGraphics or not isSimpleProxyModel(model) then return end
-    if model:GetAttribute("KryxLowGraphicsProxy") then return end
-
-    local ok, boxCFrame, boxSize = pcall(function()
-        return model:GetBoundingBox()
-    end)
-    if not ok or not boxCFrame or not boxSize then return end
-
-    model:SetAttribute("KryxLowGraphicsProxy", true)
-    table.insert(proxyModels, model)
+    if model:GetAttribute("KryxLowGraphicsHidden") then return end
+    model:SetAttribute("KryxLowGraphicsHidden", true)
     for _, descendant in ipairs(model:GetDescendants()) do
         if descendant:IsA("BasePart") then
             rememberLowGraphicsValue(descendant, "LocalTransparencyModifier")
             descendant.LocalTransparencyModifier = 1
         end
     end
-
-    local proxy = Instance.new("Part")
-    proxy.Name = "KryxLowGraphicsProxy"
-    proxy.Size = Vector3.new(
-        math.max(boxSize.X, 1),
-        math.max(boxSize.Y, 1),
-        math.max(boxSize.Z, 1)
-    )
-    proxy.CFrame = boxCFrame
-    proxy.Anchored = true
-    proxy.CanCollide = false
-    proxy.CanTouch = false
-    proxy.CastShadow = false
-    proxy.Material = Enum.Material.Plastic
-    local name = string.lower(model.Name)
-    proxy.Color = (name:find("tree", 1, true) or name:find("plant", 1, true)
-        or name:find("bush", 1, true) or name:find("grass", 1, true))
-        and Color3.fromRGB(104, 138, 91)
-        or Color3.fromRGB(156, 139, 119)
-    proxy.Parent = workspace
-    table.insert(helperParts, proxy)
-    table.insert(lowGraphicsProxyParts, proxy)
 end
 
 local function hideNpcModel(model)
@@ -16369,12 +16338,6 @@ local function setLowGraphics(enabled)
             lowGraphicsDescendantConn:Disconnect()
             lowGraphicsDescendantConn = nil
         end
-        for _, proxy in ipairs(lowGraphicsProxyParts) do
-            if proxy and proxy.Parent then
-                pcall(function() proxy:Destroy() end)
-            end
-        end
-        lowGraphicsProxyParts = {}
         for instance, properties in pairs(savedLowGraphics) do
             if instance and instance.Parent then
                 for property, value in pairs(properties) do
@@ -16383,16 +16346,15 @@ local function setLowGraphics(enabled)
             end
         end
         savedLowGraphics = {}
+        for _, instance in ipairs(workspace:GetDescendants()) do
+            if instance:IsA("Model") and instance:GetAttribute("KryxLowGraphicsHidden") then
+                pcall(function() instance:SetAttribute("KryxLowGraphicsHidden", nil) end)
+            end
+        end
         for material, color in pairs(savedTerrainColors) do
             pcall(function() workspace.Terrain:SetMaterialColor(material, color) end)
         end
         savedTerrainColors = {}
-        for _, model in ipairs(proxyModels) do
-            if model and model.Parent then
-                pcall(function() model:SetAttribute("KryxLowGraphicsProxy", nil) end)
-            end
-        end
-        proxyModels = {}
         if savedLowLighting then
             for property, value in pairs(savedLowLighting) do
                 pcall(function() lighting[property] = value end)
@@ -16778,7 +16740,6 @@ track(runService.RenderStepped:Connect(function()
     localRoot.CFrame = CFrame.new(targetPos)
 end))
 
-local characterScaleCache = {}
 local characterModelScaleCache = {}
 
 applyCharacterScale = function(enabled)
@@ -16787,65 +16748,26 @@ applyCharacterScale = function(enabled)
     if not char then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return false end
-
-    if char.ScaleTo then
-        local ok, currentScale = pcall(function()
-            return char:GetScale()
-        end)
-        if enabled and characterModelScaleCache[char] == nil then
-            characterModelScaleCache[char] = (ok and currentScale) or 1
-        end
-        local targetScale = enabled and ((characterModelScaleCache[char] or 1) * state.characterScale)
-            or (characterModelScaleCache[char] or 1)
-        local scaled, scaleError = pcall(function()
-            char:ScaleTo(targetScale)
-        end)
-        if not scaled then
-            logError("Shrink", "Character:ScaleTo failed", scaleError)
-        elseif not enabled then
-            characterModelScaleCache[char] = nil
-        end
+    if not char.ScaleTo or not char.GetScale then
+        logError("Shrink", "This character rig does not support local Model scaling")
+        return false
     end
 
-    local scaleNames = {
-        "BodyWidthScale",
-        "BodyHeightScale",
-        "BodyDepthScale",
-        "HeadScale",
-        "ProportionScale",
-        "WidthScale",
-        "DepthScale",
-        "HeightScale",
-    }
-
-    for _, value in ipairs(hum:GetChildren()) do
-        if value:IsA("NumberValue") then
-            local name = value.Name
-            local shouldScale = false
-            for _, scaleName in ipairs(scaleNames) do
-                if name == scaleName then
-                    shouldScale = true
-                    break
-                end
-            end
-            if not shouldScale and name:find("Scale", 1, true) then
-                shouldScale = true
-            end
-
-            if shouldScale then
-                if enabled then
-                    if characterScaleCache[value] == nil then
-                        characterScaleCache[value] = value.Value
-                    end
-                    value.Value = math.min(value.Value, 0.7)
-                else
-                    if characterScaleCache[value] ~= nil then
-                        value.Value = characterScaleCache[value]
-                        characterScaleCache[value] = nil
-                    end
-                end
-            end
-        end
+    local ok, currentScale = pcall(function()
+        return char:GetScale()
+    end)
+    if enabled and characterModelScaleCache[char] == nil then
+        characterModelScaleCache[char] = (ok and currentScale) or 1
+    end
+    local targetScale = enabled and ((characterModelScaleCache[char] or 1) * state.characterScale)
+        or (characterModelScaleCache[char] or 1)
+    local scaled, scaleError = pcall(function()
+        char:ScaleTo(targetScale)
+    end)
+    if not scaled then
+        logError("Shrink", "Character:ScaleTo failed", scaleError)
+    elseif not enabled then
+        characterModelScaleCache[char] = nil
     end
 
     local verifyOk, scale = pcall(function() return char:GetScale() end)
@@ -18036,7 +17958,7 @@ playerTab:Toggle({
 
 playerTab:Toggle({
     Title = "Thu nhỏ nhân vật",
-    Desc = "Co người lại để dễ đi qua chỗ hẹp hoặc di chuyển tự do hơn",
+    Desc = "Thu nhỏ ở client; người chơi khác có thể không thấy đúng kích thước",
     Default = false,
     Callback = function(s)
         local ok = applyCharacterScale(s)
