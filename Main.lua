@@ -15727,6 +15727,7 @@ local state = {
     fly = false,
     antiAfk = true,
     fullbright = false,
+    lowGraphics = false,
     speed = 16,
 }
 
@@ -15743,6 +15744,8 @@ local cachedPrompts = {}
 local autoTaskRunId = 0
 local autoHealRunId = 0
 local savedLighting = nil
+local savedLowGraphics = {}
+local lowGraphicsDescendantConn = nil
 local automationBusy = false
 local automationPhase = "Idle"
 local debugEnabled = false
@@ -16058,6 +16061,96 @@ local function clearAllLines()
     lineCache = {}
 end
 
+local function rememberLowGraphicsValue(instance, property)
+    if not savedLowGraphics[instance] then
+        savedLowGraphics[instance] = {}
+    end
+    if savedLowGraphics[instance][property] == nil then
+        local ok, value = pcall(function()
+            return instance[property]
+        end)
+        if ok then
+            savedLowGraphics[instance][property] = value
+        end
+    end
+end
+
+local function simplifyLowGraphicsInstance(instance)
+    if not instance or not instance.Parent then return end
+
+    local function setProperty(property, value)
+        rememberLowGraphicsValue(instance, property)
+        pcall(function() instance[property] = value end)
+    end
+
+    if instance:IsA("BasePart") then
+        setProperty("Material", Enum.Material.Plastic)
+        setProperty("Reflectance", 0)
+        setProperty("CastShadow", false)
+    elseif instance:IsA("ParticleEmitter") or instance:IsA("Trail")
+        or instance:IsA("Beam") or instance:IsA("Smoke")
+        or instance:IsA("Fire") or instance:IsA("Sparkles") then
+        setProperty("Enabled", false)
+    elseif instance:IsA("PostEffect") or instance:IsA("Highlight") then
+        setProperty("Enabled", false)
+    elseif instance:IsA("Terrain") then
+        setProperty("Decoration", false)
+    end
+end
+
+local function setLowGraphics(enabled)
+    state.lowGraphics = enabled
+    debugLog("Low graphics", enabled and "enabled" or "disabled")
+
+    if enabled then
+        for _, instance in ipairs(lighting:GetChildren()) do
+            simplifyLowGraphicsInstance(instance)
+        end
+        simplifyLowGraphicsInstance(workspace.Terrain)
+        for _, instance in ipairs(workspace:GetDescendants()) do
+            simplifyLowGraphicsInstance(instance)
+        end
+
+        if not lowGraphicsDescendantConn then
+            lowGraphicsDescendantConn = workspace.DescendantAdded:Connect(function(instance)
+                if state.lowGraphics then
+                    task.defer(simplifyLowGraphicsInstance, instance)
+                end
+            end)
+        end
+    else
+        if lowGraphicsDescendantConn then
+            lowGraphicsDescendantConn:Disconnect()
+            lowGraphicsDescendantConn = nil
+        end
+        for instance, properties in pairs(savedLowGraphics) do
+            if instance and instance.Parent then
+                for property, value in pairs(properties) do
+                    pcall(function() instance[property] = value end)
+                end
+            end
+        end
+        savedLowGraphics = {}
+    end
+
+    if enabled then
+        state.drawLines = false
+        clearAllLines()
+        clearESPByType("Anomaly")
+        clearESPByType("Patient")
+        clearESPByType("ObjectItem")
+        for _, player in ipairs(players:GetPlayers()) do
+            local char = player.Character
+            local highlight = char and char:FindFirstChild("KryxHighlight")
+            if highlight then highlight:Destroy() end
+            if char and lineCache[char] then
+                if lineCache[char].Frame then lineCache[char].Frame:Destroy() end
+                lineCache[char] = nil
+            end
+        end
+    end
+end
+
 local function clearLineFor(target)
     if lineCache[target] then
         if lineCache[target].Frame then
@@ -16114,7 +16207,10 @@ end))
 -- ==========================================
 task.spawn(function()
     while not dead do
-        task.wait(0.8)
+        task.wait(state.lowGraphics and 2 or 0.8)
+        if state.lowGraphics then
+            continue
+        end
         if worldScanDirty then
             rebuildWorldScanCache()
         end
@@ -17915,6 +18011,16 @@ miscTab:Button({
     end,
 })
 
+miscTab:Toggle({
+    Title = "Fix lag / Đồ họa đơn giản",
+    Desc = "Tắt hiệu ứng, bóng đổ, ESP và giảm quét nền để nhẹ máy hơn",
+    Default = false,
+    Callback = function(s)
+        setLowGraphics(s)
+        notify("Đồ họa", s and "Đã bật chế độ tối ưu nhẹ máy." or "Đã khôi phục hiệu ứng ban đầu.", 3)
+    end,
+})
+
 miscTab:Button({
     Title = "♻️ Unload Script",
     Desc = "Cleanly shuts everything off and closes the menu",
@@ -17938,6 +18044,8 @@ genv.__AHOSP_CLEANUP = function()
     autoHealRunId = autoHealRunId + 1
     state.fullbright = false
     setFullbright(false)
+    state.lowGraphics = false
+    setLowGraphics(false)
     state.noClip = false
     applyNoClip(false)
     state.shrink = false
