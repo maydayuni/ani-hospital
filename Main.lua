@@ -15738,11 +15738,50 @@ local cachedPrompts = {}
 local autoTaskRunId = 0
 local autoHealRunId = 0
 local savedLighting = nil
+local automationBusy = false
+local automationPhase = "Idle"
+local debugEnabled = false
+local debugLogLines = {}
+local DEBUG_LOG_LIMIT = 300
 
 local connections = {}
 local function track(conn) table.insert(connections, conn) return conn end
+local notify
 
-local function notify(t, c, d)
+local function debugLog(message, ...)
+    if not debugEnabled then return end
+    local details = {...}
+    if #details > 0 then
+        local values = {}
+        for index, value in ipairs(details) do
+            values[index] = tostring(value)
+        end
+        message = message .. " | " .. table.concat(values, " | ")
+    end
+    local line = string.format("[%0.3f][%s] %s", os.clock(), automationPhase, tostring(message))
+    table.insert(debugLogLines, line)
+    if #debugLogLines > DEBUG_LOG_LIMIT then
+        table.remove(debugLogLines, 1)
+    end
+    print("[AH DEBUG] " .. line)
+end
+
+local function copyDebugLog()
+    local text = #debugLogLines > 0
+        and table.concat(debugLogLines, "\n")
+        or "[AH DEBUG] Chưa có log. Hãy bật Debug rồi thực hiện thao tác."
+    if setclipboard then
+        local ok = pcall(function() setclipboard(text) end)
+        if ok then
+            notify("Debug", "Đã sao chép " .. tostring(#debugLogLines) .. " dòng log.", 3)
+            return true
+        end
+    end
+    notify("Debug", "Không hỗ trợ sao chép clipboard trong môi trường này.", 4)
+    return false
+end
+
+notify = function(t, c, d)
     pcall(function()
         WindUI:Notify({ Title = t, Content = c, Duration = d or 3 })
     end)
@@ -15760,6 +15799,7 @@ local function getHumanoid()
 end
 
 local function setFullbright(enabled)
+    debugLog("Fullbright", enabled and "enabled" or "disabled")
     if enabled then
         if not savedLighting then
             savedLighting = {
@@ -16208,6 +16248,7 @@ end
 -- FASTER ACTIONS (every prompt fires instantly)
 -- ==========================================
 local function applyFasterActions()
+    debugLog("Faster actions", state.fasterActions and "enabled" or "disabled")
     pcall(function()
         for _, desc in ipairs(workspace:GetDescendants()) do
             if desc:IsA("ProximityPrompt") then
@@ -16437,6 +16478,7 @@ local lastTaskDiagnostic = ""
 local lastTaskDiagnosticAt = 0
 
 local function taskDiagnostic(message)
+    debugLog("Diagnostic", message)
     local now = os.clock()
     if lastTaskDiagnostic == message and now - lastTaskDiagnosticAt < 8 then
         return
@@ -16444,6 +16486,30 @@ local function taskDiagnostic(message)
     lastTaskDiagnostic = message
     lastTaskDiagnosticAt = now
     notify("Auto Tasks", message, 3)
+end
+
+local function setAutomationPhase(phase)
+    automationPhase = phase
+    debugLog("Phase", phase)
+end
+
+local function isPatientModel(model)
+    if not model or not model:IsA("Model") then return false end
+    if model == localPlayer.Character or players:GetPlayerFromCharacter(model) then
+        return false
+    end
+    if not model:FindFirstChildOfClass("Humanoid") then return false end
+    if not model:FindFirstChild("HumanoidRootPart")
+        and not model:FindFirstChildWhichIsA("BasePart", true) then
+        return false
+    end
+    local name = string.lower(model.Name)
+    return model:GetAttribute("Patient") == true
+        or model:GetAttribute("Skinwalker") == true
+        or model:GetAttribute("SkinwalkerEasy") == true
+        or model:GetAttribute("PenaltyWhenLettingIn") == true
+        or name:find("patient", 1, true) ~= nil
+        or name:find("npc", 1, true) ~= nil
 end
 
 local function findDescendantByNames(root, names)
@@ -16494,15 +16560,18 @@ end
 
 local function fireTaskPrompt(prompt)
     if not prompt or not prompt:IsA("ProximityPrompt") or prompt.Enabled == false then
+        debugLog("Prompt skipped", "missing or disabled")
         return false
     end
     if not fireproximityprompt then
+        debugLog("Prompt failed", "fireproximityprompt unavailable", getPromptDescription(prompt))
         notify("Auto Tasks", "Môi trường hiện tại không hỗ trợ fireproximityprompt.", 4)
         return false
     end
     local ok = pcall(function()
         fireproximityprompt(prompt)
     end)
+    debugLog(ok and "Prompt fired" or "Prompt error", getPromptDescription(prompt))
     return ok
 end
 
@@ -16512,30 +16581,78 @@ end
 
 local function findActiveNpc()
     local folder = findDescendantByNames(workspace, { "NPCs", "NPC", "Patients", "Patient" })
-    if not folder then return nil end
-    for _, child in ipairs(folder:GetChildren()) do
-        if child:IsA("Model") and child:FindFirstChildOfClass("Humanoid") then
-            return child
+    if folder then
+        if isPatientModel(folder) then return folder end
+        for _, child in ipairs(folder:GetChildren()) do
+            if isPatientModel(child) then
+                return child
+            end
+        end
+        for _, descendant in ipairs(folder:GetDescendants()) do
+            if isPatientModel(descendant) then
+                return descendant
+            end
         end
     end
-    for _, descendant in ipairs(folder:GetDescendants()) do
-        if descendant:IsA("Model") and descendant:FindFirstChildOfClass("Humanoid") then
+    for _, descendant in ipairs(workspace:GetDescendants()) do
+        if isPatientModel(descendant) then
             return descendant
         end
     end
     return nil
 end
 
+local function getPromptDescription(prompt)
+    return string.format("%s | Action=%s | Object=%s", prompt:GetFullName(), prompt.ActionText, prompt.ObjectText)
+end
+
+local function diagnoseAutomation()
+    debugLog("Diagnostic started")
+    local patientCount = 0
+    local promptCount = 0
+    local patientNames = {}
+    for _, descendant in ipairs(workspace:GetDescendants()) do
+        if descendant:IsA("Model") and isPatientModel(descendant) then
+            patientCount = patientCount + 1
+            if #patientNames < 8 then table.insert(patientNames, descendant.Name) end
+        elseif descendant:IsA("ProximityPrompt") then
+            promptCount = promptCount + 1
+        end
+    end
+    local roomFolder = findDescendantByNames(workspace, { "Rooms", "PatientRooms", "Patient Rooms" })
+    local checkinFolder = findCheckinFolder()
+    taskDiagnostic(string.format(
+        "Chẩn đoán: %d bệnh nhân, %d prompt, Rooms=%s, Checkin=%s, phase=%s",
+        patientCount,
+        promptCount,
+        roomFolder and roomFolder:GetFullName() or "không có",
+        checkinFolder and checkinFolder:GetFullName() or "không có",
+        automationPhase
+    ))
+    if #patientNames > 0 then
+        taskDiagnostic("Bệnh nhân: " .. table.concat(patientNames, ", "))
+    end
+    debugLog("Diagnostic finished", patientCount, promptCount)
+end
+
 local function moveToPrompt(root, prompt, distance)
-    if not root or not prompt or not prompt.Parent then return false end
+    if not root or not prompt or not prompt.Parent then
+        debugLog("Move failed", "missing root or prompt")
+        return false
+    end
     local target = prompt.Parent:IsA("BasePart") and prompt.Parent
         or prompt.Parent:FindFirstChildWhichIsA("BasePart", true)
-    if not target then return false end
+    if not target then
+        debugLog("Move failed", "no target part", prompt:GetFullName())
+        return false
+    end
     root.CFrame = target.CFrame * CFrame.new(0, 0, distance or 2)
+    debugLog("Moved to prompt", getPromptDescription(prompt))
     return true
 end
 
 local function doTaskAtPrompt(prompt, stepIndex)
+    debugLog("Task step started", stepIndex, getPromptDescription(prompt))
     local char = getChar()
     local root = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -16569,9 +16686,17 @@ local function doTaskAtPrompt(prompt, stepIndex)
     if not prompt.Enabled then
         root.CFrame = oldCFrame
     end
+    debugLog("Task step finished", stepIndex, "enabled=" .. tostring(prompt.Enabled))
 end
 
 local function autoTasksLoop(runId)
+    if automationBusy then
+        state.autoTasks = false
+        taskDiagnostic("Đang có một tác vụ tự động khác chạy.")
+        return
+    end
+    automationBusy = true
+    setAutomationPhase("Auto Tasks")
     -- invisible helper blocks (marker spots from the original dance)
     local cubo1 = Instance.new("Part")
     cubo1.Name = "Cubo1Ref"
@@ -16591,6 +16716,7 @@ local function autoTasksLoop(runId)
         elseif not checkinFolder then
             taskDiagnostic("Không tìm thấy khu Check-in trong Workspace.")
         else
+                debugLog("Auto Tasks target", npc:GetFullName(), checkinFolder:GetFullName())
                 local isAnom = (npc:GetAttribute("Skinwalker") == true)
                     or (npc:GetAttribute("SkinwalkerEasy") == true)
                     or (npc:GetAttribute("PenaltyWhenLettingIn") == true)
@@ -16632,6 +16758,8 @@ local function autoTasksLoop(runId)
     end
 
     if cubo1 and cubo1.Parent then cubo1:Destroy() end
+    automationBusy = false
+    setAutomationPhase("Idle")
 end
 
 -- ==========================================
@@ -16639,6 +16767,13 @@ end
 -- walks the whole fix-a-patient circuit by itself
 -- ==========================================
 local function autoHealLoop(runId)
+    if automationBusy then
+        state.autoHeal = false
+        taskDiagnostic("Đang có một tác vụ tự động khác chạy.")
+        return
+    end
+    automationBusy = true
+    setAutomationPhase("Auto Heal")
     while state.autoHeal and autoHealRunId == runId and not dead do
         local rooms = findDescendantByNames(workspace, { "Rooms", "PatientRooms", "Patient Rooms" })
         local prompt, roomParent
@@ -16655,6 +16790,7 @@ local function autoHealLoop(runId)
         end
 
         if prompt and roomParent then
+            debugLog("Auto Heal room selected", roomParent:GetFullName(), getPromptDescription(prompt))
             local root = getRoot()
             if root then
                 moveToPrompt(root, prompt, 2)
@@ -16665,6 +16801,7 @@ local function autoHealLoop(runId)
                 local analyzer = findDescendantByNames(roomParent, { "Analyzer", "Processor", "Analyze" })
                 local analyzerPP = findPrompt(analyzer)
                 if analyzerPP and analyzerPP.Enabled then
+                    debugLog("Auto Heal analyzer", getPromptDescription(analyzerPP))
                     moveToPrompt(root, analyzerPP, 2)
                     task.wait(0.3)
                     fireTaskPrompt(analyzerPP)
@@ -16674,6 +16811,7 @@ local function autoHealLoop(runId)
                 local comp = findDescendantByNames(roomParent, { "Computer", "PC", "Diagnosis" })
                 local compPP = findPrompt(comp)
                 if compPP and compPP.Enabled then
+                    debugLog("Auto Heal computer", getPromptDescription(compPP))
                     moveToPrompt(root, compPP, 3)
                     task.wait(0.3)
                     fireTaskPrompt(compPP)
@@ -16684,6 +16822,7 @@ local function autoHealLoop(runId)
                 if supplies then
                     for _, desc in ipairs(supplies:GetDescendants()) do
                         if desc:IsA("ProximityPrompt") and desc.Enabled then
+                            debugLog("Auto Heal supply", getPromptDescription(desc))
                             moveToPrompt(root, desc, 3)
                             task.wait(0.3)
                             fireTaskPrompt(desc)
@@ -16700,6 +16839,8 @@ local function autoHealLoop(runId)
         end
         task.wait(1)
     end
+    automationBusy = false
+    setAutomationPhase("Idle")
 end
 
 -- ==========================================
@@ -16789,6 +16930,7 @@ end
 -- ==========================================
 local busy = false
 local function fetchObject(itemName)
+    debugLog("Fetch object started", itemName)
     if busy then return false end
     busy = true
 
@@ -16851,6 +16993,7 @@ local function fetchObject(itemName)
                     camera.CameraSubject = hum
 
                     busy = false
+                    debugLog("Fetch object succeeded", itemName, desc:GetFullName())
                     return true
                 end
             end
@@ -16858,6 +17001,7 @@ local function fetchObject(itemName)
     end
 
     busy = false
+    debugLog("Fetch object failed", itemName)
     return false
 end
 
@@ -16882,6 +17026,7 @@ local roomCFrames = {
 
 local tpCooldown = false
 local function teleportTo(roomName)
+    debugLog("Teleport requested", roomName)
     if tpCooldown then
         notify("📍", "Chill, cooldown! ⏳", 2)
         return
@@ -16893,10 +17038,12 @@ local function teleportTo(roomName)
             root.CFrame = cf
         end)
         tpCooldown = true
+        debugLog("Teleport succeeded", roomName)
         notify("📍", "You're there! ✨", 2)
         task.wait(0.5)
         tpCooldown = false
     else
+        debugLog("Teleport failed", roomName)
         notify("📍", "Couldn't hop there! 😢", 2)
     end
 end
@@ -17109,6 +17256,7 @@ autoTab:Toggle({
     Default = false,
     Callback = function(s)
         state.autoMinigames = s
+        debugLog("Auto Minigames", s and "enabled" or "disabled")
         if s then
             minigameQueue = {}
             minigameClicked = {}
@@ -17124,6 +17272,7 @@ autoTab:Toggle({
     Default = false,
     Callback = function(s)
         state.autoTasks = s
+        debugLog("Auto Tasks toggle", s and "enabled" or "disabled")
         autoTaskRunId = autoTaskRunId + 1
         if s then
             task.spawn(autoTasksLoop, autoTaskRunId)
@@ -17140,11 +17289,55 @@ autoTab:Toggle({
     Default = false,
     Callback = function(s)
         state.autoHeal = s
+        debugLog("Auto Heal toggle", s and "enabled" or "disabled")
         autoHealRunId = autoHealRunId + 1
         if s then
             task.spawn(autoHealLoop, autoHealRunId)
         end
     end,
+})
+
+autoTab:Button({
+    Title = "Chẩn đoán tự động",
+    Desc = "Kiểm tra bệnh nhân, phòng và prompt mà không thao tác",
+    Icon = "lucide:scan-search",
+    Callback = diagnoseAutomation,
+})
+
+autoTab:Button({
+    Title = "Dừng tác vụ tự động",
+    Desc = "Dừng Auto Tasks và Auto Heal hiện tại",
+    Icon = "lucide:square",
+    Callback = function()
+        state.autoTasks = false
+        state.autoHeal = false
+        autoTaskRunId = autoTaskRunId + 1
+        autoHealRunId = autoHealRunId + 1
+        setAutomationPhase("Idle")
+        taskDiagnostic("Đã dừng toàn bộ tác vụ tự động.")
+    end,
+})
+
+autoTab:Toggle({
+    Title = "Debug log",
+    Desc = "Ghi lại discovery, di chuyển, prompt và lỗi tự động",
+    Default = false,
+    Callback = function(s)
+        debugEnabled = s
+        if s then
+            debugLog("Debug enabled")
+            notify("Debug", "Đã bật log debug. Hãy thực hiện thao tác rồi sao chép log.", 3)
+        else
+            print("[AH DEBUG] disabled")
+        end
+    end,
+})
+
+autoTab:Button({
+    Title = "Sao chép debug log",
+    Desc = "Chép tối đa 300 dòng log gần nhất vào clipboard",
+    Icon = "lucide:clipboard",
+    Callback = copyDebugLog,
 })
 
 -- ==========================================
@@ -17256,6 +17449,7 @@ miscTab:Button({
 -- ==========================================
 genv.__AHOSP_CLEANUP = function()
     dead = true
+    automationBusy = false
     autoTaskRunId = autoTaskRunId + 1
     autoHealRunId = autoHealRunId + 1
     state.fullbright = false
