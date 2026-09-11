@@ -15722,6 +15722,8 @@ local state = {
     mouseFree = false,
     noClip = false,
     shrink = false,
+    followPlayer = false,
+    followTarget = nil,
     fly = false,
     antiAfk = true,
     fullbright = false,
@@ -16353,6 +16355,46 @@ track(runService.RenderStepped:Connect(function()
     end
 end))
 
+local function getNearestPlayerTarget()
+    local localRoot = getRoot()
+    if not localRoot then return nil end
+    local bestPlayer, bestDist = nil, math.huge
+    for _, p in ipairs(players:GetPlayers()) do
+        if p ~= localPlayer and p.Character then
+            local targetRoot = p.Character:FindFirstChild("HumanoidRootPart")
+            if targetRoot then
+                local dist = (targetRoot.Position - localRoot.Position).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    bestPlayer = p
+                end
+            end
+        end
+    end
+    return bestPlayer
+end
+
+local function setFollowTarget(player)
+    state.followTarget = player
+    if player and player.Character then
+        debugLog("Follow target", player.Name)
+    end
+end
+
+track(runService.RenderStepped:Connect(function()
+    if dead or not state.followPlayer then return end
+    local targetPlayer = state.followTarget or getNearestPlayerTarget()
+    if not targetPlayer then return end
+    local targetChar = targetPlayer.Character
+    local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+    local localRoot = getRoot()
+    if not targetRoot or not localRoot then return end
+
+    local offset = Vector3.new(0, 2, 6)
+    local targetPos = targetRoot.Position + offset
+    localRoot.CFrame = CFrame.new(targetPos)
+end))
+
 local characterScaleCache = {}
 
 local function applyCharacterScale(enabled)
@@ -16361,6 +16403,12 @@ local function applyCharacterScale(enabled)
     if not char then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return false end
+
+    if hum.ScaleTo then
+        pcall(function()
+            hum:ScaleTo(enabled and 0.7 or 1)
+        end)
+    end
 
     local scaleNames = {
         "BodyWidthScale",
@@ -16392,7 +16440,7 @@ local function applyCharacterScale(enabled)
                     if characterScaleCache[value] == nil then
                         characterScaleCache[value] = value.Value
                     end
-                    value.Value = math.min(value.Value, 0.55)
+                    value.Value = math.min(value.Value, 0.7)
                 else
                     if characterScaleCache[value] ~= nil then
                         value.Value = characterScaleCache[value]
@@ -17579,6 +17627,67 @@ playerTab:Toggle({
     end,
 })
 
+playerTab:Button({
+    Title = "Chọn người chơi gần nhất",
+    Desc = "Đặt mục tiêu bám theo người chơi gần nhất hiện tại",
+    Icon = "lucide:user-round",
+    Callback = function()
+        local target = getNearestPlayerTarget()
+        if target then
+            setFollowTarget(target)
+            notify("👥", "Đang theo: " .. target.Name, 2)
+        else
+            notify("👥", "Không tìm thấy người chơi nào gần đây.", 2)
+        end
+    end,
+})
+
+playerTab:Button({
+    Title = "Đổi mục tiêu bám tiếp theo",
+    Desc = "Bật theo người chơi tiếp theo trong danh sách",
+    Icon = "lucide:arrow-right-left",
+    Callback = function()
+        local list = {}
+        for _, p in ipairs(players:GetPlayers()) do
+            if p ~= localPlayer then
+                table.insert(list, p)
+            end
+        end
+        if #list == 0 then
+            notify("👥", "Chưa có người chơi nào để bám.", 2)
+            return
+        end
+        local index = 1
+        if state.followTarget then
+            for i, p in ipairs(list) do
+                if p == state.followTarget then
+                    index = (i % #list) + 1
+                    break
+                end
+            end
+        end
+        setFollowTarget(list[index])
+        notify("👥", "Mục tiêu mới: " .. list[index].Name, 2)
+    end,
+})
+
+playerTab:Toggle({
+    Title = "Bám theo người chơi",
+    Desc = "Teleport liên tục theo người được chọn và giữ cách nhau cố định",
+    Default = false,
+    Callback = function(s)
+        state.followPlayer = s
+        if s and not state.followTarget then
+            setFollowTarget(getNearestPlayerTarget())
+        end
+        if s then
+            notify("👥", "Bám theo người chơi đang bật.", 2)
+        else
+            notify("👥", "Bám theo người chơi đã tắt.", 2)
+        end
+    end,
+})
+
 playerTab:Toggle({
     Title = "Độ sáng ban đêm",
     Desc = "Tăng độ sáng và khôi phục đúng thiết lập cũ khi tắt",
@@ -17833,6 +17942,8 @@ genv.__AHOSP_CLEANUP = function()
     applyNoClip(false)
     state.shrink = false
     applyCharacterScale(false)
+    state.followPlayer = false
+    state.followTarget = nil
     state.fasterActions = false
     applyFasterActions()
     promptDurations = {}
