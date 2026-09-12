@@ -15749,6 +15749,10 @@ local state = {
     highQualityEdges = true,
     driftEffects = false,
     playerPushForce = 35,
+    objectPushEnabled = false,
+    objectPushMode = "local",
+    objectPushItemName = "",
+    objectPushDistance = 10,
     language = "vi",
     speed = 16,
 }
@@ -15786,6 +15790,7 @@ local vehicleLastGlass = nil
 local vehicleLastExhaust = nil
 local vehicleExhaustParts = {}
 local dragTargetPlayer = nil
+local objectPushCooldown = 0
 local savedMaxGraphics = nil
 local savedMaxPartSettings = {}
 local savedQualityLevel = nil
@@ -16975,6 +16980,96 @@ local function getNearestPlayerTarget()
     return bestPlayer
 end
 
+local function getSelectedPushItem()
+    local chosenName = tostring(state.objectPushItemName or ""):lower()
+    local char = getChar()
+    local backpack = localPlayer and localPlayer:FindFirstChildOfClass("Backpack")
+
+    local function matchCandidate(candidate)
+        if not candidate or not candidate:IsA("Tool") then return false end
+        return chosenName == "" or string.lower(candidate.Name) == chosenName
+    end
+
+    if char then
+        for _, child in ipairs(char:GetChildren()) do
+            if matchCandidate(child) then
+                return child
+            end
+        end
+    end
+    if backpack then
+        for _, child in ipairs(backpack:GetChildren()) do
+            if matchCandidate(child) then
+                return child
+            end
+        end
+    end
+    if char then
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Tool") then
+                return child
+            end
+        end
+    end
+    if backpack then
+        for _, child in ipairs(backpack:GetChildren()) do
+            if child:IsA("Tool") then
+                return child
+            end
+        end
+    end
+    return nil
+end
+
+local function applyLocalObjectPush(targetPlayer)
+    local localRoot = getRoot()
+    local targetCharacter = targetPlayer and targetPlayer.Character
+    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+    if not localRoot or not targetRoot then return false end
+
+    local now = os.clock()
+    if now - objectPushCooldown < 0.12 then return false end
+    objectPushCooldown = now
+
+    local pushTool = getSelectedPushItem()
+    local origin = pushTool and pushTool:FindFirstChild("Handle") or localRoot
+    local fromPos = origin and origin.Position or localRoot.Position
+    local toTarget = targetRoot.Position - fromPos
+    if toTarget.Magnitude > (state.objectPushDistance or 10) then return false end
+
+    local direction = toTarget
+    if direction.Magnitude < 0.001 then
+        direction = localRoot.CFrame.LookVector
+    else
+        direction = Vector3.new(direction.X, 0, direction.Z)
+        if direction.Magnitude < 0.001 then
+            direction = localRoot.CFrame.LookVector
+        else
+            direction = direction.Unit
+        end
+    end
+
+    local force = tonumber(state.playerPushForce) or 35
+    local existing = targetRoot:FindFirstChild("KryxLocalPush")
+    if existing and existing:IsA("BodyVelocity") then
+        existing:Destroy()
+    end
+
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = "KryxLocalPush"
+    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bv.Velocity = direction * force
+    bv.Parent = targetRoot
+
+    task.delay(0.2, function()
+        if bv and bv.Parent then
+            bv:Destroy()
+        end
+    end)
+
+    return true
+end
+
 local function setFollowTarget(player)
     state.followTarget = player
     if player and player.Character then
@@ -17139,6 +17234,28 @@ track(runService.RenderStepped:Connect(function()
         targetVel.Y * 0.8,
         targetVel.Z * 0.85
     )
+end))
+
+track(runService.RenderStepped:Connect(function()
+    if dead or not state.objectPushEnabled then return end
+    local target = getNearestPlayerTarget()
+    if not target then return end
+
+    if state.objectPushMode == "server" then
+        local localRoot = getRoot()
+        local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if localRoot and targetRoot then
+            local delta = targetRoot.Position - localRoot.Position
+            local dist = delta.Magnitude
+            if dist <= (state.objectPushDistance or 10) then
+                local direction = delta.Magnitude > 0.001 and delta.Unit or localRoot.CFrame.LookVector
+                requestServerTargetMove(target, direction, state.playerPushForce)
+            end
+        end
+        return
+    end
+
+    applyLocalObjectPush(target)
 end))
 
 local function findWheelParts(model)
@@ -18458,12 +18575,34 @@ miniToggleStroke.Transparency = 0.2
 miniToggleStroke.Parent = miniToggleButton
 
 local miniToggleState = false
+local function setWindowVisible(visible)
+    if not window then return end
+
+    local ok = pcall(function()
+        window.Visible = visible
+    end)
+    if ok then return end
+
+    local candidates = {
+        window.Frame,
+        window.Main,
+        window.Root,
+        window.Container,
+        window.UI,
+    }
+    for _, candidate in ipairs(candidates) do
+        if candidate and candidate:IsA("GuiObject") then
+            pcall(function()
+                candidate.Visible = visible
+            end)
+        end
+    end
+end
+
 miniToggleButton.MouseButton1Click:Connect(function()
     miniToggleState = not miniToggleState
     miniToggleButton.Text = miniToggleState and "◎" or "◉"
-    if window and type(window.Visible) == "boolean" then
-        window.Visible = not miniToggleState
-    end
+    setWindowVisible(not miniToggleState)
 end)
 
 -- ==========================================
@@ -19160,6 +19299,56 @@ vehicleTab:Input({
         if value then
             state.playerPushForce = math.clamp(value, 10, 200)
             notify("Đẩy người", "Lực đẩy: " .. tostring(state.playerPushForce), 2)
+        end
+    end,
+})
+
+vehicleTab:Toggle({
+    Title = "Đẩy bằng vật (local)",
+    Desc = "Nếu cầm vật hoặc tool, nó sẽ ép người gần nhất di chuyển theo hướng local; chỉ có hiệu ứng client.",
+    Default = false,
+    Callback = function(s)
+        state.objectPushEnabled = s
+        if s then
+            notify("Đẩy vật", "Đẩy vật đã bật; chế độ hiện tại: " .. tostring(state.objectPushMode), 2)
+        end
+    end,
+})
+
+vehicleTab:Dropdown({
+    Title = "Chế độ vật đẩy",
+    Desc = "Local = hiệu ứng client; Server = dùng bridge nếu server có listener.",
+    Values = { "local", "server" },
+    Value = state.objectPushMode,
+    Callback = function(value)
+        state.objectPushMode = value == "server" and "server" or "local"
+        notify("Đẩy vật", "Chế độ: " .. tostring(state.objectPushMode), 2)
+    end,
+})
+
+vehicleTab:Input({
+    Title = "Tên món đồ làm vật đẩy",
+    Desc = "Ví dụ: ToolName hoặc tên vật cầm trên tay. Để trống nếu muốn lấy tool đang cầm.",
+    Placeholder = "Ví dụ: Hammer",
+    Value = tostring(state.objectPushItemName),
+    Type = "Input",
+    Callback = function(text)
+        state.objectPushItemName = tostring(text or "")
+        notify("Đẩy vật", "Món đồ đang chọn: " .. tostring(state.objectPushItemName == "" and "tool đang cầm" or state.objectPushItemName), 2)
+    end,
+})
+
+vehicleTab:Input({
+    Title = "Khoảng cách vật đẩy",
+    Desc = "Bán kính đẩy bằng vật, từ 3 đến 25",
+    Placeholder = "Ví dụ: 10",
+    Value = tostring(state.objectPushDistance),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.objectPushDistance = math.clamp(value, 3, 25)
+            notify("Đẩy vật", "Khoảng cách: " .. tostring(state.objectPushDistance), 2)
         end
     end,
 })
