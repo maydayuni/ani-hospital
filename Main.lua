@@ -15785,6 +15785,7 @@ local vehicleLastSteering = nil
 local vehicleLastGlass = nil
 local vehicleLastExhaust = nil
 local vehicleExhaustParts = {}
+local dragTargetPlayer = nil
 local savedMaxGraphics = nil
 local savedMaxPartSettings = {}
 local savedQualityLevel = nil
@@ -16992,42 +16993,39 @@ local function pushNearestTargetPlayer(force)
     local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
     if not targetRoot then return false end
 
-    local delta = targetRoot.Position - localRoot.Position
-    local direction = delta.Magnitude > 0 and (delta / delta.Magnitude) or localRoot.CFrame.LookVector
-    local pushPower = math.clamp(tonumber(force) or state.playerPushForce or 35, 10, 200)
-
-    localRoot.CFrame = CFrame.new(targetRoot.Position + direction * 1.8)
-
-    local pushPart = Instance.new("Part")
-    pushPart.Name = "KryxPushProp"
-    pushPart.Size = Vector3.new(1, 1, 1)
-    pushPart.Transparency = 1
-    pushPart.CanCollide = false
-    pushPart.Anchored = false
-    pushPart.CFrame = targetRoot.CFrame
-    pushPart.Parent = workspace
-
-    local pushVelocity = Instance.new("BodyVelocity")
-    pushVelocity.MaxForce = Vector3.new(40000, 40000, 40000)
-    pushVelocity.Velocity = (direction * pushPower) + Vector3.new(0, 18, 0)
-    pushVelocity.Parent = pushPart
-
-    local targetVelocity = Instance.new("BodyVelocity")
-    targetVelocity.MaxForce = Vector3.new(40000, 40000, 40000)
-    targetVelocity.Velocity = (direction * pushPower) + Vector3.new(0, 18, 0)
-    targetVelocity.Parent = targetRoot
-
-    task.delay(0.12, function()
-        if targetVelocity and targetVelocity.Parent then targetVelocity:Destroy() end
-        if pushVelocity and pushVelocity.Parent then pushVelocity:Destroy() end
-    end)
-    task.delay(0.25, function()
-        if pushPart and pushPart.Parent then pushPart:Destroy() end
-    end)
-
-    notify("Đẩy người", "Đã tele sát và đẩy " .. nearestPlayer.Name .. " theo hướng hướng nhìn.", 2)
+    dragTargetPlayer = nearestPlayer
+    notify("Đẩy người", "Bắt đầu kéo " .. nearestPlayer.Name .. " theo hướng di chuyển của bạn.", 2)
     return true
 end
+
+track(runService.RenderStepped:Connect(function()
+    if dead or not dragTargetPlayer then return end
+    local localRoot = getRoot()
+    local targetCharacter = dragTargetPlayer and dragTargetPlayer.Character
+    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+    if not localRoot or not targetRoot then
+        dragTargetPlayer = nil
+        return
+    end
+
+    local localVel = localRoot.AssemblyLinearVelocity
+    local localMove = Vector3.new(localVel.X, 0, localVel.Z)
+    local direction = localMove.Magnitude > 1 and localMove.Unit or localRoot.CFrame.LookVector
+    local followDistance = 2.5 + math.clamp((state.playerPushForce or 35) / 40, 0, 3)
+    local desiredPos = localRoot.Position + direction * followDistance
+    local desiredCF = CFrame.new(desiredPos, desiredPos + direction)
+    local alpha = 0.18 + math.clamp(localMove.Magnitude / 120, 0, 0.22)
+
+    targetRoot.CFrame = targetRoot.CFrame:Lerp(desiredCF, alpha)
+
+    local targetVel = targetRoot.AssemblyLinearVelocity
+    local desiredVel = direction * math.clamp(localMove.Magnitude * 1.35 + 10, 0, 55)
+    if localMove.Magnitude > 1 then
+        targetRoot.AssemblyLinearVelocity = Vector3.new(desiredVel.X, targetVel.Y * 0.75, desiredVel.Z)
+    else
+        targetRoot.AssemblyLinearVelocity = Vector3.new(targetVel.X * 0.7, targetVel.Y, targetVel.Z * 0.7)
+    end
+end))
 
 local function findWheelParts(model)
     local wheels = {}
@@ -19165,6 +19163,7 @@ genv.__AHOSP_CLEANUP = function()
     state.followTarget = nil
     state.fixedFlight = false
     fixedFlightCFrame = nil
+    dragTargetPlayer = nil
     restoreVehicleProperties()
     state.vehicleBrakeHeld = false
     state.fasterActions = false
