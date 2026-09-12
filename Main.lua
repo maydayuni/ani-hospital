@@ -16317,6 +16317,7 @@ local function hideNpcModel(model)
     if not state.lowGraphics or not state.hideNpcGraphics
         or not model or not model:IsA("Model")
         or model == localPlayer.Character
+        or string.lower(model.Name):find("npcvisit", 1, true) ~= nil
         or not model:FindFirstChildOfClass("Humanoid")
         or model:FindFirstChildWhichIsA("ProximityPrompt", true)
         or model:FindFirstChildWhichIsA("ClickDetector", true) then
@@ -16495,6 +16496,7 @@ local function setLowGraphics(enabled)
                         or instance:IsA("Highlight") or instance:IsA("Clouds")
                         or instance:IsA("Sky") or instance:IsA("Atmosphere")
                         or instance:IsA("SelectionBox") or instance:IsA("BoxHandleAdornment")
+                        or (instance:IsA("Model") and string.lower(instance.Name):find("npcvisit", 1, true) ~= nil)
                         or (instance:IsA("Model") and isSimpleProxyModel(instance))
                         or (instance:IsA("Model") and state.hideNpcGraphics
                             and instance:FindFirstChildOfClass("Humanoid") ~= nil)
@@ -17011,20 +17013,21 @@ track(runService.RenderStepped:Connect(function()
     local localVel = localRoot.AssemblyLinearVelocity
     local localMove = Vector3.new(localVel.X, 0, localVel.Z)
     local direction = localMove.Magnitude > 1 and localMove.Unit or localRoot.CFrame.LookVector
-    local followDistance = 2.5 + math.clamp((state.playerPushForce or 35) / 40, 0, 3)
+    local followDistance = 2.2 + math.clamp((state.playerPushForce or 35) / 40, 0, 2.8)
     local desiredPos = localRoot.Position + direction * followDistance
-    local desiredCF = CFrame.new(desiredPos, desiredPos + direction)
-    local alpha = 0.18 + math.clamp(localMove.Magnitude / 120, 0, 0.22)
+    local alpha = 0.28 + math.clamp(localMove.Magnitude / 90, 0, 0.26)
 
-    targetRoot.CFrame = targetRoot.CFrame:Lerp(desiredCF, alpha)
+    local currentPos = targetRoot.Position
+    local nextPos = currentPos:Lerp(desiredPos, alpha)
+    targetRoot.CFrame = CFrame.new(nextPos, nextPos + direction)
 
     local targetVel = targetRoot.AssemblyLinearVelocity
-    local desiredVel = direction * math.clamp(localMove.Magnitude * 1.35 + 10, 0, 55)
-    if localMove.Magnitude > 1 then
-        targetRoot.AssemblyLinearVelocity = Vector3.new(desiredVel.X, targetVel.Y * 0.75, desiredVel.Z)
-    else
-        targetRoot.AssemblyLinearVelocity = Vector3.new(targetVel.X * 0.7, targetVel.Y, targetVel.Z * 0.7)
-    end
+    local desiredVel = direction * math.clamp(localMove.Magnitude * 1.55 + 18, 0, 80)
+    targetRoot.AssemblyLinearVelocity = Vector3.new(
+        desiredVel.X,
+        targetVel.Y * 0.65 + 2,
+        desiredVel.Z
+    )
 end))
 
 local function findWheelParts(model)
