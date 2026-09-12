@@ -16955,39 +16955,31 @@ track(runService.RenderStepped:Connect(function()
     local cam = workspace.CurrentCamera
     if not root or not cam then return end
 
-    local orbitCameraActive = state.thirdPerson or state.ghostMode
-
     if state.ghostMode then
-        if ghostBodyHeight == nil then
-            ghostBodyHeight = root.Position.Y
-        end
-
-        local baseY = ghostBodyHeight + 3
+        local ghostY = root.Position.Y
         local rotationX, rotationY, rotationZ = root.CFrame:ToEulerAnglesXYZ()
-        root.CFrame = CFrame.new(root.Position.X, baseY, root.Position.Z) * CFrame.Angles(rotationX, rotationY, rotationZ)
+        root.CFrame = CFrame.new(root.Position.X, ghostY, root.Position.Z) * CFrame.Angles(rotationX, rotationY, rotationZ)
         root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then
-            hum.WalkSpeed = 0
-            hum.JumpPower = 0
             hum.AutoRotate = false
-            hum.PlatformStand = true
         end
     end
 
-    if not orbitCameraActive then return end
+    if not (state.thirdPerson or state.ghostMode) then return end
 
     local baseYaw = math.atan2(root.CFrame.LookVector.X, root.CFrame.LookVector.Z)
     local desiredYaw = baseYaw + thirdPersonYaw
     local desiredPitch = math.clamp(thirdPersonPitch, -1.15, 1.15)
 
     local orbit = CFrame.fromEulerAnglesYXZ(desiredPitch, desiredYaw, 0)
-    local distance = state.ghostMode and 13 or 10
-    local height = state.ghostMode and 6 or 4.5
+    local distance = state.ghostMode and 11 or 10
+    local height = state.ghostMode and 3.2 or 4.5
     local offset = orbit:VectorToWorldSpace(Vector3.new(0, height, -distance))
     local targetPos = root.Position + offset
-    local lookAt = root.Position + Vector3.new(0, state.ghostMode and 2.5 or 2, 0)
+    local lookAt = root.Position + Vector3.new(0, 1.7, 0)
     local desiredCF = CFrame.lookAt(targetPos, lookAt)
 
     cam.CFrame = cam.CFrame:Lerp(desiredCF, 0.18)
@@ -17044,23 +17036,17 @@ local function applyGhostMode(enabled)
         if root then
             ghostBodyHeight = root.Position.Y
             local rotationX, rotationY, rotationZ = root.CFrame:ToEulerAnglesXYZ()
-            root.CFrame = CFrame.new(root.Position.X, math.max(root.Position.Y + 3, ghostBodyHeight + 3), root.Position.Z) * CFrame.Angles(rotationX, rotationY, rotationZ)
+            root.CFrame = CFrame.new(root.Position.X, ghostBodyHeight, root.Position.Z) * CFrame.Angles(rotationX, rotationY, rotationZ)
             root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
         end
         if hum then
-            hum.WalkSpeed = 0
-            hum.JumpPower = 0
             hum.AutoRotate = false
-            hum.PlatformStand = true
         end
     else
         ghostBodyHeight = nil
         if hum then
-            hum.WalkSpeed = 16
-            hum.JumpPower = 50
             hum.AutoRotate = true
-            hum.PlatformStand = false
         end
     end
 
