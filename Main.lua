@@ -16948,17 +16948,48 @@ track(runService.RenderStepped:Connect(function()
 end))
 
 track(runService.RenderStepped:Connect(function()
-    if dead or not state.fixedFlight or not fixedFlightCFrame then return end
+    if dead or not state.fixedFlight then return end
     local root = getRoot()
     local cam = workspace.CurrentCamera
     if not root or not cam then return end
-    local current = root.CFrame
-    local lookY = math.clamp(cam.CFrame.LookVector.Y, -1, 1)
-    local heightOffset = state.fixedFlightHeight * lookY
-    local targetY = fixedFlightCFrame.Position.Y + heightOffset
-    root.CFrame = CFrame.new(current.Position.X, targetY, current.Position.Z)
-        * CFrame.Angles(current:ToEulerAnglesXYZ())
-    root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z)
+
+    if not fixedFlightCFrame then
+        fixedFlightCFrame = root.CFrame
+    end
+
+    local moveX = (userInputService:IsKeyDown(Enum.KeyCode.D) and 1 or 0)
+        - (userInputService:IsKeyDown(Enum.KeyCode.A) and 1 or 0)
+    local moveZ = (userInputService:IsKeyDown(Enum.KeyCode.W) and 1 or 0)
+        - (userInputService:IsKeyDown(Enum.KeyCode.S) and 1 or 0)
+
+    local forward = cam.CFrame.LookVector
+    local right = cam.CFrame.RightVector
+    local flatForward = Vector3.new(forward.X, 0, forward.Z)
+    local flatRight = Vector3.new(right.X, 0, right.Z)
+    if flatForward.Magnitude < 0.001 then flatForward = Vector3.new(0, 0, -1) end
+    if flatRight.Magnitude < 0.001 then flatRight = Vector3.new(1, 0, 0) end
+    flatForward = flatForward.Unit
+    flatRight = flatRight.Unit
+
+    local moveVec = (flatForward * moveZ) + (flatRight * moveX)
+    local speed = math.clamp(state.speed * 0.9, 3, 28)
+    if moveVec.Magnitude > 0 then
+        local desiredPos = root.Position + (moveVec.Unit * speed)
+        root.CFrame = CFrame.new(desiredPos, desiredPos + cam.CFrame.LookVector)
+    else
+        local current = root.CFrame
+        local targetY = fixedFlightCFrame.Position.Y + state.fixedFlightHeight
+        root.CFrame = CFrame.new(current.Position.X, targetY, current.Position.Z)
+            * CFrame.Angles(current:ToEulerAnglesXYZ())
+    end
+
+    if userInputService:IsKeyDown(Enum.KeyCode.Space) then
+        root.CFrame = root.CFrame + Vector3.new(0, 0.35, 0)
+    elseif userInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        root.CFrame = root.CFrame + Vector3.new(0, -0.35, 0)
+    end
+
+    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 end))
 
 local function getVehicleSeat()
@@ -17015,18 +17046,18 @@ track(runService.RenderStepped:Connect(function()
     local direction = localMove.Magnitude > 1 and localMove.Unit or localRoot.CFrame.LookVector
     local followDistance = 2.2 + math.clamp((state.playerPushForce or 35) / 40, 0, 2.8)
     local desiredPos = localRoot.Position + direction * followDistance
-    local alpha = 0.28 + math.clamp(localMove.Magnitude / 90, 0, 0.26)
+    local alpha = 0.12 + math.clamp(localMove.Magnitude / 120, 0, 0.18)
 
     local currentPos = targetRoot.Position
     local nextPos = currentPos:Lerp(desiredPos, alpha)
-    targetRoot.CFrame = CFrame.new(nextPos, nextPos + direction)
+    local proposedCF = CFrame.new(nextPos, nextPos + direction)
+    targetRoot.CFrame = targetRoot.CFrame:Lerp(proposedCF, alpha)
 
     local targetVel = targetRoot.AssemblyLinearVelocity
-    local desiredVel = direction * math.clamp(localMove.Magnitude * 1.55 + 18, 0, 80)
     targetRoot.AssemblyLinearVelocity = Vector3.new(
-        desiredVel.X,
-        targetVel.Y * 0.65 + 2,
-        desiredVel.Z
+        targetVel.X * 0.85,
+        targetVel.Y * 0.8,
+        targetVel.Z * 0.85
     )
 end))
 
