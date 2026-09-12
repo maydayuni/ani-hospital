@@ -15783,6 +15783,7 @@ local lowGraphicsRunId = 0
 local thirdPersonYaw = 0
 local thirdPersonPitch = 0
 local thirdPersonMouseLook = false
+local ghostBodyHeight = nil
 local vehicleSavedProperties = {}
 local vehicleSavedVisuals = {}
 local vehicleLastModel = nil
@@ -16948,13 +16949,22 @@ applyThirdPerson = function()
 end
 
 track(runService.RenderStepped:Connect(function()
-    if dead or not state.thirdPerson then return end
+    if dead then return end
     local char = getChar()
     local root = char and char:FindFirstChild("HumanoidRootPart")
     local cam = workspace.CurrentCamera
     if not root or not cam then return end
 
+    local orbitCameraActive = state.thirdPerson or state.ghostMode
+
     if state.ghostMode then
+        if ghostBodyHeight == nil then
+            ghostBodyHeight = root.Position.Y
+        end
+
+        local baseY = ghostBodyHeight + 3
+        local rotationX, rotationY, rotationZ = root.CFrame:ToEulerAnglesXYZ()
+        root.CFrame = CFrame.new(root.Position.X, baseY, root.Position.Z) * CFrame.Angles(rotationX, rotationY, rotationZ)
         root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
         local hum = char:FindFirstChildOfClass("Humanoid")
@@ -16966,15 +16976,18 @@ track(runService.RenderStepped:Connect(function()
         end
     end
 
+    if not orbitCameraActive then return end
+
     local baseYaw = math.atan2(root.CFrame.LookVector.X, root.CFrame.LookVector.Z)
     local desiredYaw = baseYaw + thirdPersonYaw
     local desiredPitch = math.clamp(thirdPersonPitch, -1.15, 1.15)
 
     local orbit = CFrame.fromEulerAnglesYXZ(desiredPitch, desiredYaw, 0)
-    local distance = 10
-    local offset = orbit:VectorToWorldSpace(Vector3.new(0, 4.5, -distance))
+    local distance = state.ghostMode and 13 or 10
+    local height = state.ghostMode and 6 or 4.5
+    local offset = orbit:VectorToWorldSpace(Vector3.new(0, height, -distance))
     local targetPos = root.Position + offset
-    local lookAt = root.Position + Vector3.new(0, 2, 0)
+    local lookAt = root.Position + Vector3.new(0, state.ghostMode and 2.5 or 2, 0)
     local desiredCF = CFrame.lookAt(targetPos, lookAt)
 
     cam.CFrame = cam.CFrame:Lerp(desiredCF, 0.18)
@@ -17026,9 +17039,12 @@ local function applyGhostMode(enabled)
     local hum = getHumanoid()
     if not char then return end
 
+    local root = char:FindFirstChild("HumanoidRootPart")
     if enabled then
-        local root = char:FindFirstChild("HumanoidRootPart")
         if root then
+            ghostBodyHeight = root.Position.Y
+            local rotationX, rotationY, rotationZ = root.CFrame:ToEulerAnglesXYZ()
+            root.CFrame = CFrame.new(root.Position.X, math.max(root.Position.Y + 3, ghostBodyHeight + 3), root.Position.Z) * CFrame.Angles(rotationX, rotationY, rotationZ)
             root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
             root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
         end
@@ -17039,6 +17055,7 @@ local function applyGhostMode(enabled)
             hum.PlatformStand = true
         end
     else
+        ghostBodyHeight = nil
         if hum then
             hum.WalkSpeed = 16
             hum.JumpPower = 50
@@ -18897,9 +18914,13 @@ playerTab:Toggle({
 
 playerTab:Toggle({
     Title = "Ghost mode",
-    Desc = "Thoát hồn: nhân vật đứng yên, camera thoát khỏi thân và đi qua vật mà không bị đẩy",
+    Desc = "Thoát hồn: thân đứng yên, camera tách khỏi người và xoay tự do như góc nhìn thứ ba",
     Default = false,
     Callback = function(s)
+        if s then
+            state.thirdPerson = true
+            applyThirdPerson()
+        end
         applyGhostMode(s)
     end,
 })
