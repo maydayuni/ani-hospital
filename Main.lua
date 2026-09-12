@@ -16987,7 +16987,8 @@ local function getSelectedPushItem()
 
     local function matchCandidate(candidate)
         if not candidate or not candidate:IsA("Tool") then return false end
-        return chosenName == "" or string.lower(candidate.Name) == chosenName
+        if chosenName == "" then return true end
+        return string.lower(candidate.Name) == chosenName
     end
 
     if char then
@@ -17004,6 +17005,7 @@ local function getSelectedPushItem()
             end
         end
     end
+
     if char then
         for _, child in ipairs(char:GetChildren()) do
             if child:IsA("Tool") then
@@ -17032,7 +17034,7 @@ local function applyLocalObjectPush(targetPlayer)
     objectPushCooldown = now
 
     local pushTool = getSelectedPushItem()
-    local origin = pushTool and pushTool:FindFirstChild("Handle") or localRoot
+    local origin = pushTool and pushTool:FindFirstChild("Handle")
     local fromPos = origin and origin.Position or localRoot.Position
     local toTarget = targetRoot.Position - fromPos
     if toTarget.Magnitude > (state.objectPushDistance or 10) then return false end
