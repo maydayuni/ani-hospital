@@ -15804,6 +15804,68 @@ local inventoryButtons = {}
 local connections = {}
 local function track(conn) table.insert(connections, conn) return conn end
 local notify
+local remoteActionEvent = nil
+local remoteServerDragEnabled = false
+
+local function ensureRemoteActionBridge()
+    if remoteActionEvent then return remoteActionEvent end
+    local root = replicatedStorage
+    local existing = root and root:FindFirstChild("KryxActionBridge")
+    if existing and existing:IsA("RemoteEvent") then
+        remoteActionEvent = existing
+        return existing
+    end
+    if root then
+        local event = Instance.new("RemoteEvent")
+        event.Name = "KryxActionBridge"
+        event.Parent = root
+        remoteActionEvent = event
+        return event
+    end
+    return nil
+end
+
+local function requestServerTargetMove(targetPlayer, direction, strength)
+    if not targetPlayer or not targetPlayer.Character then return false end
+    local bridge = ensureRemoteActionBridge()
+    if not bridge then return false end
+    local payload = {
+        kind = "drag",
+        targetUserId = targetPlayer.UserId,
+        direction = Vector3.new(direction.X, direction.Y, direction.Z),
+        strength = math.clamp(tonumber(strength) or 35, 10, 150),
+    }
+    local ok, err = pcall(function()
+        bridge:FireServer(payload)
+    end)
+    if not ok then
+        debugLog("Remote drag failed", tostring(err))
+        return false
+    end
+    return true
+end
+
+local function handleRemoteServerDrag(payload)
+    if not payload or payload.kind ~= "drag" then return end
+    local targetPlayer = players:GetPlayerByUserId(payload.targetUserId or 0)
+    if not targetPlayer or targetPlayer == localPlayer then return end
+    local targetRoot = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then return end
+
+    local strength = math.clamp(tonumber(payload.strength) or 35, 10, 150)
+    local direction = payload.direction or Vector3.new(0, 0, -1)
+    direction = Vector3.new(direction.X, 0, direction.Z)
+    if direction.Magnitude < 0.001 then direction = Vector3.new(0, 0, -1) end
+    direction = direction.Unit
+
+    local velocity = targetRoot.AssemblyLinearVelocity
+    local targetVel = direction * strength
+    targetRoot.AssemblyLinearVelocity = Vector3.new(
+        targetVel.X,
+        velocity.Y * 0.75,
+        targetVel.Z
+    )
+end
 
 local function debugLog(message, ...)
     if not debugEnabled then return end
@@ -16035,6 +16097,14 @@ end
 
 for _, prompt in ipairs(workspace:GetDescendants()) do
     hookManualPrompt(prompt)
+end
+
+local bridge = ensureRemoteActionBridge()
+if bridge then
+    remoteServerDragEnabled = true
+    track(bridge.OnServerEvent:Connect(function(payload)
+        handleRemoteServerDrag(payload)
+    end))
 end
 
 track(workspace.DescendantAdded:Connect(function(inst)
@@ -16973,20 +17043,24 @@ track(runService.RenderStepped:Connect(function()
 
     local moveVec = (flatForward * moveZ) + (flatRight * moveX)
     local speed = math.clamp(state.speed * 0.9, 3, 28)
+    local targetY = fixedFlightCFrame.Position.Y + state.fixedFlightHeight
+
     if moveVec.Magnitude > 0 then
         local desiredPos = root.Position + (moveVec.Unit * speed)
-        root.CFrame = CFrame.new(desiredPos, desiredPos + cam.CFrame.LookVector)
+        desiredPos = Vector3.new(desiredPos.X, targetY, desiredPos.Z)
+        root.CFrame = CFrame.new(desiredPos, desiredPos + Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z))
     else
         local current = root.CFrame
-        local targetY = fixedFlightCFrame.Position.Y + state.fixedFlightHeight
         root.CFrame = CFrame.new(current.Position.X, targetY, current.Position.Z)
             * CFrame.Angles(current:ToEulerAnglesXYZ())
     end
 
     if userInputService:IsKeyDown(Enum.KeyCode.Space) then
-        root.CFrame = root.CFrame + Vector3.new(0, 0.35, 0)
+        local current = root.CFrame
+        root.CFrame = CFrame.new(current.Position.X, current.Position.Y + 0.35, current.Position.Z)
     elseif userInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
-        root.CFrame = root.CFrame + Vector3.new(0, -0.35, 0)
+        local current = root.CFrame
+        root.CFrame = CFrame.new(current.Position.X, current.Position.Y - 0.35, current.Position.Z)
     end
 
     root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
@@ -17026,8 +17100,17 @@ local function pushNearestTargetPlayer(force)
     local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
     if not targetRoot then return false end
 
+    local direction = (targetRoot.Position - localRoot.Position)
+    if direction.Magnitude < 0.001 then
+        direction = localRoot.CFrame.LookVector
+    end
+    direction = direction.Unit
+
+    local remoteOk = requestServerTargetMove(nearestPlayer, direction, tonumber(force) or state.playerPushForce or 35)
     dragTargetPlayer = nearestPlayer
-    notify("Đẩy người", "Bắt đầu kéo " .. nearestPlayer.Name .. " theo hướng di chuyển của bạn.", 2)
+    notify("Đẩy người", remoteOk
+        and ("Đã gửi yêu cầu kéo thật tới server cho " .. nearestPlayer.Name .. ".")
+        or ("Bắt đầu kéo " .. nearestPlayer.Name .. " theo hướng di chuyển của bạn."), 2)
     return true
 end
 
