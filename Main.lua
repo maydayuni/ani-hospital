@@ -15779,6 +15779,9 @@ local noClipLastUpdate = 0
 local playerEspLastUpdate = 0
 local fixedFlightCFrame = nil
 local lowGraphicsRunId = 0
+local thirdPersonYaw = 0
+local thirdPersonPitch = 0
+local thirdPersonMouseLook = false
 local vehicleSavedProperties = {}
 local vehicleSavedVisuals = {}
 local vehicleLastModel = nil
@@ -16943,6 +16946,14 @@ applyThirdPerson = function()
     end
 end
 
+local function unlockJumpKey()
+    local hum = getHumanoid()
+    if not hum then return end
+    if hum:GetState() ~= Enum.HumanoidStateType.Jumping then
+        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end
+
 track(runService.RenderStepped:Connect(function()
     if dead or not state.thirdPerson then return end
     local char = getChar()
@@ -16950,15 +16961,48 @@ track(runService.RenderStepped:Connect(function()
     local cam = workspace.CurrentCamera
     if not root or not cam then return end
 
-    local look = root.CFrame.LookVector
-    local targetPos = root.Position - look * 10 + Vector3.new(0, 4.5, 0)
+    local desiredYaw = thirdPersonYaw
+    local desiredPitch = math.clamp(thirdPersonPitch, -1.15, 1.15)
+    local camOffset = CFrame.new(0, 4.5, -10)
+    local worldCFrame = root.CFrame * CFrame.fromEulerAnglesYXZ(desiredPitch, desiredYaw, 0)
+    local targetPos = worldCFrame:PointToWorldSpace(Vector3.new(0, 4.5, 10))
     local lookAt = root.Position + Vector3.new(0, 2, 0)
     cam.CFrame = CFrame.lookAt(targetPos, lookAt)
+
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
         hum.CameraOffset = Vector3.new(0, 2, 0)
     end
     cam.Focus = CFrame.new(lookAt)
+end))
+
+track(userInputService.InputChanged:Connect(function(input, processed)
+    if dead or not state.thirdPerson or processed then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement and thirdPersonMouseLook then
+        local delta = input.Delta
+        thirdPersonYaw = thirdPersonYaw - delta.X * 0.005
+        thirdPersonPitch = thirdPersonPitch - delta.Y * 0.0025
+    end
+end))
+
+track(userInputService.InputBegan:Connect(function(input, processed)
+    if dead then return end
+    if input.KeyCode == Enum.KeyCode.Space then
+        if miniToggleState or not state.thirdPerson then
+            unlockJumpKey()
+        end
+    end
+
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        thirdPersonMouseLook = true
+    end
+end))
+
+track(userInputService.InputEnded:Connect(function(input, processed)
+    if dead then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        thirdPersonMouseLook = false
+    end
 end))
 
 local function getNearestPlayerTarget()
@@ -18515,10 +18559,21 @@ end))
 -- H anomalies · J patients · K items · Z free mouse
 -- ==========================================
 track(userInputService.InputBegan:Connect(function(input, processed)
-    if dead or processed then return end
+    if dead then return end
     if debugEnabled and input.KeyCode ~= Enum.KeyCode.Unknown then
         debugLog("Manual input", input.KeyCode.Name)
     end
+
+    if input.KeyCode == Enum.KeyCode.Space and processed then
+        local hum = getHumanoid()
+        if miniToggleState or not state.thirdPerson then
+            unlockJumpKey()
+        elseif hum and hum:GetState() ~= Enum.HumanoidStateType.Jumping then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+
+    if processed then return end
     if input.KeyCode == Enum.KeyCode.H then
         state.anomaliesESP = not state.anomaliesESP
         if not state.anomaliesESP then clearESPByType("Anomaly") end
