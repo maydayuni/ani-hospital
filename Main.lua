@@ -15741,13 +15741,14 @@ local state = {
     vehicleGrip = 1,
     vehicleBrake = 1,
     vehicleLaunch = 1,
-    vehicleSteering = 1,
+    vehicleSteering = 3,
     vehicleGlass = 0.65,
     vehicleExhaust = false,
     vehicleBrakeHeld = false,
     maxGraphics = false,
     highQualityEdges = true,
-    driftEffects = true,
+    driftEffects = false,
+    playerPushForce = 35,
     language = "vi",
     speed = 16,
 }
@@ -16964,6 +16965,70 @@ local function getVehicleSeat()
     return seat and seat:IsA("VehicleSeat") and seat or nil
 end
 
+local function pushNearestTargetPlayer(force)
+    local localRoot = getRoot()
+    if not localRoot then return false end
+
+    local nearestPlayer, nearestDist = nil, math.huge
+    for _, player in ipairs(players:GetPlayers()) do
+        if player ~= localPlayer and player.Character then
+            local targetRoot = player.Character:FindFirstChild("HumanoidRootPart")
+            if targetRoot then
+                local dist = (targetRoot.Position - localRoot.Position).Magnitude
+                if dist < nearestDist then
+                    nearestDist = dist
+                    nearestPlayer = player
+                end
+            end
+        end
+    end
+
+    if not nearestPlayer then
+        notify("Đẩy người", "Không có người chơi nào gần để đẩy.", 2)
+        return false
+    end
+
+    local targetCharacter = nearestPlayer.Character
+    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then return false end
+
+    local delta = targetRoot.Position - localRoot.Position
+    local direction = delta.Magnitude > 0 and (delta / delta.Magnitude) or localRoot.CFrame.LookVector
+    local pushPower = math.clamp(tonumber(force) or state.playerPushForce or 35, 10, 200)
+
+    localRoot.CFrame = CFrame.new(targetRoot.Position + direction * 1.8)
+
+    local pushPart = Instance.new("Part")
+    pushPart.Name = "KryxPushProp"
+    pushPart.Size = Vector3.new(1, 1, 1)
+    pushPart.Transparency = 1
+    pushPart.CanCollide = false
+    pushPart.Anchored = false
+    pushPart.CFrame = targetRoot.CFrame
+    pushPart.Parent = workspace
+
+    local pushVelocity = Instance.new("BodyVelocity")
+    pushVelocity.MaxForce = Vector3.new(40000, 40000, 40000)
+    pushVelocity.Velocity = (direction * pushPower) + Vector3.new(0, 18, 0)
+    pushVelocity.Parent = pushPart
+
+    local targetVelocity = Instance.new("BodyVelocity")
+    targetVelocity.MaxForce = Vector3.new(40000, 40000, 40000)
+    targetVelocity.Velocity = (direction * pushPower) + Vector3.new(0, 18, 0)
+    targetVelocity.Parent = targetRoot
+
+    task.delay(0.12, function()
+        if targetVelocity and targetVelocity.Parent then targetVelocity:Destroy() end
+        if pushVelocity and pushVelocity.Parent then pushVelocity:Destroy() end
+    end)
+    task.delay(0.25, function()
+        if pushPart and pushPart.Parent then pushPart:Destroy() end
+    end)
+
+    notify("Đẩy người", "Đã tele sát và đẩy " .. nearestPlayer.Name .. " theo hướng hướng nhìn.", 2)
+    return true
+end
+
 local function findWheelParts(model)
     local wheels = {}
     for _, part in ipairs(model:GetDescendants()) do
@@ -16979,7 +17044,14 @@ local function findWheelParts(model)
 end
 
 local function setDriftEffects(model, enabled)
-    if not state.driftEffects then enabled = false end
+    if not state.driftEffects or not model then
+        for wheel, emitter in pairs(driftEffectParts) do
+            if emitter and emitter.Parent then emitter:Destroy() end
+            driftEffectParts[wheel] = nil
+        end
+        return
+    end
+
     local wheels = findWheelParts(model)
     for _, wheel in ipairs(wheels) do
         local emitter = driftEffectParts[wheel]
@@ -17120,25 +17192,28 @@ track(runService.Heartbeat:Connect(function()
         return
     end
     applyVehicleHandling(seat)
+
     local model = seat:FindFirstAncestorOfClass("Model")
     local velocity = seat.AssemblyLinearVelocity
     local speed = velocity.Magnitude
     local sidewaysSpeed = math.abs(seat.CFrame.RightVector:Dot(velocity))
-    local drifting = speed > 10 and sidewaysSpeed > 5 and math.abs(seat.SteerFloat) > 0.15
+    local steerStrength = 1.6 + (state.vehicleSteering * 0.9)
+    local drifting = speed > 8 and sidewaysSpeed > 8 and math.abs(seat.SteerFloat) > 0.12
     if model then setDriftEffects(model, drifting) end
-    local rootPart = seat:FindFirstAncestorOfClass("Model")
-        and seat:FindFirstAncestorOfClass("Model"):FindFirstChildWhichIsA("BasePart")
+
+    local rootPart = model and model:FindFirstChildWhichIsA("BasePart")
     if rootPart and math.abs(seat.SteerFloat) > 0.01 then
         rootPart.AssemblyAngularVelocity = Vector3.new(
             0,
-            seat.SteerFloat * state.vehicleSteering * 1.5,
+            seat.SteerFloat * steerStrength,
             0
         )
     end
+
     if state.vehicleBrakeHeld and state.vehicleBrake > 1 then
-        local velocity = seat.AssemblyLinearVelocity
+        local currentVel = seat.AssemblyLinearVelocity
         local brake = math.clamp(1 - state.vehicleBrake * 0.035, 0.55, 0.96)
-        seat.AssemblyLinearVelocity = velocity * brake
+        seat.AssemblyLinearVelocity = currentVel * brake
     end
 end))
 
@@ -18912,14 +18987,38 @@ vehicleTab:Toggle({
 
 vehicleTab:Toggle({
     Title = "Khói/cát khi drift",
-    Desc = "Tạo bụi ở bánh khi tốc độ ngang và góc lái đủ lớn",
-    Default = true,
+    Desc = "Đã tắt mặc định để không tạo khói drift; còn có thể bật nếu cần",
+    Default = false,
     Callback = function(s)
         state.driftEffects = s
         vehicleLastApply = 0
         if not s and vehicleLastModel then
             setDriftEffects(vehicleLastModel, false)
         end
+    end,
+})
+
+vehicleTab:Input({
+    Title = "Lực đẩy người",
+    Desc = "Mức 10-200; dùng cho đẩy người gần nhất sau tele sát",
+    Placeholder = "Ví dụ: 35",
+    Value = tostring(state.playerPushForce),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.playerPushForce = math.clamp(value, 10, 200)
+            notify("Đẩy người", "Lực đẩy: " .. tostring(state.playerPushForce), 2)
+        end
+    end,
+})
+
+vehicleTab:Button({
+    Title = "Đẩy người gần nhất",
+    Desc = "Tele sát người gần nhất rồi dùng vật đẩy ném họ đi theo hướng",
+    Icon = "lucide:zap",
+    Callback = function()
+        pushNearestTargetPlayer(state.playerPushForce)
     end,
 })
 
