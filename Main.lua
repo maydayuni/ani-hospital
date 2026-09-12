@@ -16957,6 +16957,13 @@ track(runService.RenderStepped:Connect(function()
     if state.ghostMode then
         root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.WalkSpeed = 0
+            hum.JumpPower = 0
+            hum.AutoRotate = false
+            hum.PlatformStand = true
+        end
     end
 
     local baseYaw = math.atan2(root.CFrame.LookVector.X, root.CFrame.LookVector.Z)
@@ -16981,10 +16988,16 @@ end))
 
 track(userInputService.InputChanged:Connect(function(input, processed)
     if dead or processed then return end
-    if input.UserInputType == Enum.UserInputType.MouseMovement and thirdPersonMouseLook then
+
+    if thirdPersonMouseLook then
         local delta = input.Delta
-        thirdPersonYaw = thirdPersonYaw - delta.X * 0.005
-        thirdPersonPitch = thirdPersonPitch - delta.Y * 0.0025
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            thirdPersonYaw = thirdPersonYaw - delta.X * 0.005
+            thirdPersonPitch = thirdPersonPitch - delta.Y * 0.0025
+        elseif input.UserInputType == Enum.UserInputType.Touch and delta.Magnitude > 0 then
+            thirdPersonYaw = thirdPersonYaw - delta.X * 0.005
+            thirdPersonPitch = thirdPersonPitch - delta.Y * 0.0025
+        end
     end
 end))
 
@@ -16995,14 +17008,14 @@ track(userInputService.InputBegan:Connect(function(input, processed)
         return
     end
 
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         thirdPersonMouseLook = state.thirdPerson
     end
 end))
 
 track(userInputService.InputEnded:Connect(function(input, processed)
     if dead then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         thirdPersonMouseLook = false
     end
 end))
@@ -17010,7 +17023,29 @@ end))
 local function applyGhostMode(enabled)
     state.ghostMode = enabled
     local char = getChar()
+    local hum = getHumanoid()
     if not char then return end
+
+    if enabled then
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root then
+            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        end
+        if hum then
+            hum.WalkSpeed = 0
+            hum.JumpPower = 0
+            hum.AutoRotate = false
+            hum.PlatformStand = true
+        end
+    else
+        if hum then
+            hum.WalkSpeed = 16
+            hum.JumpPower = 50
+            hum.AutoRotate = true
+            hum.PlatformStand = false
+        end
+    end
 
     for _, part in ipairs(char:GetDescendants()) do
         if part:IsA("BasePart") then
@@ -18849,7 +18884,7 @@ playerTab:Toggle({
 
 playerTab:Toggle({
     Title = "Góc nhìn thứ ba",
-    Desc = "Đưa camera ra phía sau nhân vật, giữ chuột trái để xoay",
+    Desc = "Đưa camera ra phía sau nhân vật, giữ chuột trái hoặc kéo màn hình để xoay",
     Default = false,
     Callback = function(s)
         state.thirdPerson = s
