@@ -15725,8 +15725,11 @@ local state = {
     shrink = false,
     followPlayer = false,
     followTarget = nil,
-    fly = false,
-    flySpeed = 40,
+    followDistance = 6,
+    followSpeed = 20,
+    followThroughWalls = true,
+    wallhackEnabled = false,
+    wallhackLevel = 1,
     antiAfk = true,
     fullbright = false,
     lowGraphics = false,
@@ -15734,6 +15737,7 @@ local state = {
     fov = 70,
     characterScale = 0.7,
     fixedFlight = false,
+    fixedFlightHeight = 0,
     vehicleGrip = 1,
     vehicleBrake = 1,
     vehicleLaunch = 1,
@@ -15785,12 +15789,15 @@ local savedMaxPartSettings = {}
 local savedQualityLevel = nil
 local maxGraphicsDescendantConn = nil
 local driftEffectParts = {}
-local flightKeys = {}
+local followLastUpdate = 0
+local manualPromptConnections = {}
 local automationBusy = false
 local automationPhase = "Idle"
 local debugEnabled = false
 local debugLogLines = {}
 local DEBUG_LOG_LIMIT = 300
+local itemInventory = {}
+local inventoryButtons = {}
 
 local connections = {}
 local function track(conn) table.insert(connections, conn) return conn end
@@ -15812,6 +15819,37 @@ local function debugLog(message, ...)
         table.remove(debugLogLines, 1)
     end
     print("[AH DEBUG] " .. line)
+end
+
+local function logEnvironmentSnapshot(label)
+    local camera = workspace.CurrentCamera
+    local promptCount = 0
+    local modelCount = 0
+    for _, instance in ipairs(workspace:GetDescendants()) do
+        if instance:IsA("ProximityPrompt") then promptCount += 1 end
+        if instance:IsA("Model") then modelCount += 1 end
+    end
+    debugLog("Environment", label,
+        "PlaceId=" .. tostring(game.PlaceId),
+        "Camera=" .. tostring(camera and camera.CameraType),
+        "FOV=" .. tostring(camera and camera.FieldOfView),
+        "Players=" .. tostring(#players:GetPlayers()),
+        "WorkspaceChildren=" .. tostring(#workspace:GetChildren()),
+        "WorkspaceDescendants=" .. tostring(#workspace:GetDescendants()),
+        "Models=" .. tostring(modelCount),
+        "Prompts=" .. tostring(promptCount))
+end
+
+local function hookManualPrompt(prompt)
+    if not prompt:IsA("ProximityPrompt") or manualPromptConnections[prompt] then return end
+    manualPromptConnections[prompt] = prompt.Triggered:Connect(function(player)
+        if player == localPlayer then
+            debugLog("Manual prompt", prompt:GetFullName(),
+                "Action=" .. tostring(prompt.ActionText),
+                "Object=" .. tostring(prompt.ObjectText),
+                "Parent=" .. tostring(prompt.Parent and prompt.Parent:GetFullName()))
+        end
+    end)
 end
 
 local function copyDebugLog()
@@ -15993,7 +16031,12 @@ local function rebuildWorldScanCache()
     worldScanDirty = false
 end
 
+for _, prompt in ipairs(workspace:GetDescendants()) do
+    hookManualPrompt(prompt)
+end
+
 track(workspace.DescendantAdded:Connect(function(inst)
+    hookManualPrompt(inst)
     if state.lowGraphics then return end
     if not inst:IsA("Highlight") then
         worldScanDirty = true
@@ -16042,15 +16085,26 @@ end
 -- ==========================================
 local function applyHighlight(target, fillColor, espType)
     if not target or not target.Parent then return end
+    if not state.wallhackEnabled then
+        if highlightCache[target] and highlightCache[target].Parent then
+            highlightCache[target]:Destroy()
+            highlightCache[target] = nil
+        end
+        return
+    end
+    local fillTransparency = ({ [1] = 0.55, [2] = 0.35, [3] = 0.15 })[state.wallhackLevel] or 0.55
     if highlightCache[target] then
         highlightCache[target].FillColor = fillColor
+        highlightCache[target].FillTransparency = fillTransparency
+        highlightCache[target].OutlineTransparency = state.wallhackLevel >= 2 and 0 or 0.25
         highlightCache[target]:SetAttribute("ESPType", espType)
         return
     end
     local hl = Instance.new("Highlight")
     hl.FillColor = fillColor
-    hl.FillTransparency = 0.4
+    hl.FillTransparency = fillTransparency
     hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.OutlineTransparency = state.wallhackLevel >= 2 and 0 or 0.25
     hl.Adornee = target
     hl:SetAttribute("ESPType", espType)
     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop -- glow through walls
@@ -16857,6 +16911,22 @@ local function setFollowTarget(player)
     end
 end
 
+local function registerInventoryItem(itemName)
+    local name = tostring(itemName or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then return false end
+    for _, existing in ipairs(itemInventory) do
+        if string.lower(existing) == string.lower(name) then
+            return true
+        end
+    end
+    table.insert(itemInventory, name)
+    debugLog("Inventory add", name)
+    if refreshInventoryButtons then
+        refreshInventoryButtons()
+    end
+    return true
+end
+
 track(runService.RenderStepped:Connect(function()
     if dead or not state.followPlayer then return end
     local targetPlayer = state.followTarget or getNearestPlayerTarget()
@@ -16866,71 +16936,25 @@ track(runService.RenderStepped:Connect(function()
     local localRoot = getRoot()
     if not targetRoot or not localRoot then return end
 
-    local offset = Vector3.new(0, 2, 6)
-    local targetPos = targetRoot.Position + offset
-    localRoot.CFrame = CFrame.new(targetPos)
+    local followAlpha = math.clamp(0.12 + (state.followSpeed / 60) * 0.24, 0.08, 0.38)
+    local desiredOffset = targetRoot.CFrame.LookVector * math.max(state.followDistance, 1)
+    local targetPos = targetRoot.Position - desiredOffset + Vector3.new(0, 2, 0)
+    local desiredCF = CFrame.lookAt(targetPos, targetRoot.Position + Vector3.new(0, 2, 0))
+    localRoot.CFrame = localRoot.CFrame:Lerp(desiredCF, followAlpha)
 end))
 
 track(runService.RenderStepped:Connect(function()
     if dead or not state.fixedFlight or not fixedFlightCFrame then return end
     local root = getRoot()
-    if root then
-        local current = root.CFrame
-        root.CFrame = CFrame.new(current.Position.X, fixedFlightCFrame.Position.Y, current.Position.Z)
-            * CFrame.Angles(current:ToEulerAnglesXYZ())
-        root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z)
-    end
-end))
-
-track(runService.RenderStepped:Connect(function(deltaTime)
-    if dead or not state.fly then return end
-    local root = getRoot()
     local cam = workspace.CurrentCamera
     if not root or not cam then return end
-
-    local direction = Vector3.zero
-    local look = cam.CFrame.LookVector
-    local right = cam.CFrame.RightVector
-    if flightKeys.Forward then direction += look end
-    if flightKeys.Back then direction -= look end
-    if flightKeys.Right then direction += right end
-    if flightKeys.Left then direction -= right end
-    if flightKeys.Up then direction += Vector3.yAxis end
-    if flightKeys.Down then direction -= Vector3.yAxis end
-
-    if direction.Magnitude > 0 then
-        root.CFrame = root.CFrame + direction.Unit * state.flySpeed * deltaTime
-        root.AssemblyLinearVelocity = Vector3.zero
-    end
-end))
-
-track(userInputService.InputBegan:Connect(function(input, processed)
-    if dead or processed then return end
-    local keyMap = {
-        [Enum.KeyCode.W] = "Forward",
-        [Enum.KeyCode.S] = "Back",
-        [Enum.KeyCode.A] = "Left",
-        [Enum.KeyCode.D] = "Right",
-        [Enum.KeyCode.Space] = "Up",
-        [Enum.KeyCode.LeftControl] = "Down",
-        [Enum.KeyCode.RightControl] = "Down",
-    }
-    local key = keyMap[input.KeyCode]
-    if key then flightKeys[key] = true end
-end))
-
-track(userInputService.InputEnded:Connect(function(input)
-    local keyMap = {
-        [Enum.KeyCode.W] = "Forward",
-        [Enum.KeyCode.S] = "Back",
-        [Enum.KeyCode.A] = "Left",
-        [Enum.KeyCode.D] = "Right",
-        [Enum.KeyCode.Space] = "Up",
-        [Enum.KeyCode.LeftControl] = "Down",
-        [Enum.KeyCode.RightControl] = "Down",
-    }
-    local key = keyMap[input.KeyCode]
-    if key then flightKeys[key] = false end
+    local current = root.CFrame
+    local lookY = math.clamp(cam.CFrame.LookVector.Y, -1, 1)
+    local heightOffset = state.fixedFlightHeight * lookY
+    local targetY = fixedFlightCFrame.Position.Y + heightOffset
+    root.CFrame = CFrame.new(current.Position.X, targetY, current.Position.Z)
+        * CFrame.Angles(current:ToEulerAnglesXYZ())
+    root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z)
 end))
 
 local function getVehicleSeat()
@@ -17494,6 +17518,19 @@ local function findPrompt(root)
     return root:FindFirstChildWhichIsA("ProximityPrompt", true)
 end
 
+local function isHealPrompt(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Enabled then return false end
+    local text = string.lower(tostring(prompt.Name) .. " " .. tostring(prompt.ActionText) .. " " .. tostring(prompt.ObjectText))
+    if text:find("curtain", 1, true) or text:find("shutter", 1, true)
+        or text:find("door", 1, true) or text:find("open", 1, true)
+        or text:find("close", 1, true) then
+        return false
+    end
+    return text:find("heal", 1, true) or text:find("treat", 1, true)
+        or text:find("patient", 1, true) or text:find("bed", 1, true)
+        or text:find("diagn", 1, true) or text:find("room", 1, true)
+end
+
 local function findTaskPrompt(root, targetName)
     local prompt = findPrompt(findDescendantByNames(root, { targetName }))
     if prompt then return prompt end
@@ -17873,8 +17910,9 @@ local function autoHealLoop(runId)
             for _, candidate in ipairs(rooms:GetDescendants()) do
                 if candidate:IsA("Model") then
                     local candidatePrompt = findPrompt(candidate)
-                    if candidatePrompt and candidatePrompt.Enabled then
+                    if isHealPrompt(candidatePrompt) then
                         prompt, roomParent = candidatePrompt, candidate
+                        debugLog("Auto Heal candidate", candidate:GetFullName(), getPromptDescription(candidatePrompt))
                         break
                     end
                 end
@@ -18172,6 +18210,9 @@ end))
 -- ==========================================
 track(userInputService.InputBegan:Connect(function(input, processed)
     if dead or processed then return end
+    if debugEnabled and input.KeyCode ~= Enum.KeyCode.Unknown then
+        debugLog("Manual input", input.KeyCode.Name)
+    end
     if input.KeyCode == Enum.KeyCode.H then
         state.anomaliesESP = not state.anomaliesESP
         if not state.anomaliesESP then clearESPByType("Anomaly") end
@@ -18258,12 +18299,43 @@ espTab:Toggle({
 })
 
 espTab:Toggle({
+    Title = "Bật nhìn xuyên",
+    Desc = "Nhìn xuyên tường và vật thể.",
+    Default = false,
+    Callback = function(s)
+        state.wallhackEnabled = s
+        if not s then
+            clearESPByType("Anomaly")
+            clearESPByType("Patient")
+            clearESPByType("ObjectItem")
+        end
+    end,
+})
+
+espTab:Toggle({
     Title = "Đường chỉ dẫn ESP",
     Desc = "Vẽ đường từ màn hình đến mục tiêu",
     Default = false,
     Callback = function(s)
         state.drawLines = s
         if not s then clearAllLines() end
+    end,
+})
+
+espTab:Input({
+    Title = "Mức nhìn xuyên",
+    Desc = "1 nhẹ, 2 rõ, 3 nổi bật xuyên vật thể/tường",
+    Placeholder = "Ví dụ: 2",
+    Value = tostring(state.wallhackLevel),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.wallhackLevel = math.clamp(math.floor(value), 1, 3)
+            if state.wallhackEnabled then
+                notify("ESP", "Mức nhìn xuyên: " .. tostring(state.wallhackLevel), 2)
+            end
+        end
     end,
 })
 
@@ -18463,6 +18535,36 @@ playerTab:Toggle({
     end,
 })
 
+playerTab:Input({
+    Title = "Khoảng cách bám",
+    Desc = "Khoảng cách phía sau mục tiêu, từ 1 đến 50",
+    Placeholder = "Ví dụ: 6",
+    Value = tostring(state.followDistance),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.followDistance = math.clamp(value, 1, 50)
+            notify("👥", "Khoảng cách bám: " .. tostring(state.followDistance), 2)
+        end
+    end,
+})
+
+playerTab:Input({
+    Title = "Tốc độ bám",
+    Desc = "Số lần cập nhật bám mỗi giây, từ 1 đến 60",
+    Placeholder = "Ví dụ: 20",
+    Value = tostring(state.followSpeed),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.followSpeed = math.clamp(value, 1, 60)
+            notify("👥", "Tốc độ bám: " .. tostring(state.followSpeed), 2)
+        end
+    end,
+})
+
 playerTab:Toggle({
     Title = "Độ sáng ban đêm",
     Desc = "Tăng độ sáng và khôi phục đúng thiết lập cũ khi tắt",
@@ -18531,13 +18633,6 @@ autoTab:Toggle({
 })
 
 autoTab:Button({
-    Title = "Chẩn đoán tự động",
-    Desc = "Kiểm tra bệnh nhân, phòng và prompt mà không thao tác",
-    Icon = "lucide:scan-search",
-    Callback = diagnoseAutomation,
-})
-
-autoTab:Button({
     Title = "Dừng tác vụ tự động",
     Desc = "Dừng Auto Tasks và Auto Heal hiện tại",
     Icon = "lucide:square",
@@ -18552,14 +18647,17 @@ autoTab:Button({
 })
 
 autoTab:Toggle({
-    Title = "Debug log",
-    Desc = "Ghi lại discovery, di chuyển, prompt và lỗi tự động",
+    Title = "Debug tổng",
+    Desc = "Bật log tổng: quét môi trường, bệnh nhân, prompt, lỗi và mọi sự kiện đều ghi vào log",
     Default = false,
     Callback = function(s)
         debugEnabled = s
         if s then
+            logEnvironmentSnapshot("debug toggle on")
+            scanWorkspaceNames()
+            diagnoseAutomation()
             debugLog("Debug enabled")
-            notify("Debug", "Đã bật log debug. Hãy thực hiện thao tác rồi sao chép log.", 3)
+            notify("Debug", "Đã bật debug tổng. Tất cả log đang được ghi vào 1 nơi.", 3)
         else
             print("[AH DEBUG] disabled")
         end
@@ -18585,6 +18683,49 @@ itemsTab:Button({
     Callback = scanUsableObjects,
 })
 
+itemsTab:Section({
+    Title = "Kho đồ",
+    Text = "Danh sách món đồ đã lấy thành công. Mỗi món là một nút lấy lại nếu cần.",
+})
+
+local function refreshInventoryButtons()
+    for _, button in ipairs(inventoryButtons) do
+        if button and button.Destroy then
+            pcall(function() button:Destroy() end)
+        end
+    end
+    inventoryButtons = {}
+
+    if #itemInventory == 0 then
+        local placeholder = itemsTab:Button({
+            Title = "Kho đồ trống",
+            Icon = "lucide:package-open",
+            Callback = function()
+                notify("Kho đồ", "Chưa có món nào trong kho.", 2)
+            end,
+        })
+        table.insert(inventoryButtons, placeholder)
+        return
+    end
+
+    for _, itemName in ipairs(itemInventory) do
+        local button = itemsTab:Button({
+            Title = itemName,
+            Icon = "lucide:package",
+            Callback = function()
+                notify("🧰", "Grabbing " .. itemName .. "...", 2)
+                local got = fetchObject(itemName)
+                if got then
+                    notify("🧰", itemName .. " secured! ✨", 2)
+                else
+                    notify("🧰", "Couldn't find it! 😢", 3)
+                end
+            end,
+        })
+        table.insert(inventoryButtons, button)
+    end
+end
+
 itemsTab:Button({
     Title = "🥤 Get Run Fast Cola",
     Desc = "A cola lands in your backpack — drink it for 30s of zoom + purple sparkles",
@@ -18603,6 +18744,8 @@ itemsTab:Section({
     Title = "Get Object",
     Text = "Tap any item — you blink over, grab it, blink back.",
 })
+
+refreshInventoryButtons()
 
 local itemNames = {
     { name = "Herbs",        icon = "lucide:leaf" },
@@ -18785,36 +18928,6 @@ vehicleTab:Toggle({
 -- ==========================================
 local miscTab = window:Tab({ Title = "Khác", Icon = "lucide:settings-2" })
 
-miscTab:Toggle({
-    Title = "Bay tự do",
-    Desc = "W/S/A/D bay theo camera, Space bay lên, Ctrl bay xuống",
-    Default = false,
-    Callback = function(s)
-        state.fly = s
-        if not s then
-            flightKeys = {}
-            local root = getRoot()
-            if root then root.AssemblyLinearVelocity = Vector3.zero end
-        end
-        notify("Bay", s and "Đã bật bay tự do." or "Đã tắt bay tự do.", 2)
-    end,
-})
-
-miscTab:Input({
-    Title = "Tốc độ bay",
-    Desc = "Tốc độ di chuyển khi bay, từ 1 đến 200",
-    Placeholder = "Ví dụ: 40",
-    Value = tostring(state.flySpeed),
-    Type = "Input",
-    Callback = function(text)
-        local value = tonumber(text)
-        if value then
-            state.flySpeed = math.clamp(value, 1, 200)
-            notify("Bay", "Tốc độ bay: " .. tostring(state.flySpeed), 2)
-        end
-    end,
-})
-
 miscTab:Dropdown({
     Title = "Ngôn ngữ / Language",
     Desc = "Chọn ngôn ngữ giao diện",
@@ -18830,16 +18943,31 @@ miscTab:Dropdown({
 
 miscTab:Toggle({
     Title = "Bay cố định tại chỗ",
-    Desc = "Giữ nhân vật ở đúng vị trí hiện tại, không bị trôi",
+    Desc = "Giữ nhân vật ở đúng vị trí hiện tại, không bị trôi; đặt cao độ theo hướng nhìn",
     Default = false,
     Callback = function(s)
         state.fixedFlight = s
         local root = getRoot()
-        fixedFlightCFrame = s and (root and (root.CFrame + Vector3.new(0, 6, 0)) or nil) or nil
+        fixedFlightCFrame = s and (root and root.CFrame or nil) or nil
         if fixedFlightCFrame and root then
             root.CFrame = fixedFlightCFrame
         end
         notify("Bay", s and "Đã khóa vị trí hiện tại." or "Đã thả vị trí.", 2)
+    end,
+})
+
+miscTab:Input({
+    Title = "Độ cao bay theo hướng nhìn",
+    Desc = "Nhìn lên = lên, nhìn xuống = xuống. Giá trị từ -15 đến 15",
+    Placeholder = "Ví dụ: 3",
+    Value = tostring(state.fixedFlightHeight),
+    Type = "Input",
+    Callback = function(text)
+        local value = tonumber(text)
+        if value then
+            state.fixedFlightHeight = math.clamp(value, -15, 15)
+            notify("Bay", "Độ cao bay: " .. tostring(state.fixedFlightHeight), 2)
+        end
     end,
 })
 
@@ -18938,8 +19066,6 @@ genv.__AHOSP_CLEANUP = function()
     state.followTarget = nil
     state.fixedFlight = false
     fixedFlightCFrame = nil
-    state.fly = false
-    flightKeys = {}
     restoreVehicleProperties()
     state.vehicleBrakeHeld = false
     state.fasterActions = false
@@ -18968,6 +19094,10 @@ genv.__AHOSP_CLEANUP = function()
         pcall(function() c:Disconnect() end)
     end
     connections = {}
+    for prompt, conn in pairs(manualPromptConnections) do
+        pcall(function() conn:Disconnect() end)
+        manualPromptConnections[prompt] = nil
+    end
     pcall(function()
         if espLineGui and espLineGui.Parent then espLineGui:Destroy() end
     end)
@@ -18998,5 +19128,5 @@ window:SelectTab(1)
 if isInLobby then
     notify("animal hospital", "Join the actual game first — lobby detected! 🏥", 6)
 else
-    notify("animal hospital", "Loaded! 🏥💚", 4)
+notify("animal hospital", "Loaded! 🏥💚", 4)
 end
