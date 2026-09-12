@@ -16946,14 +16946,6 @@ applyThirdPerson = function()
     end
 end
 
-local function unlockJumpKey()
-    local hum = getHumanoid()
-    if not hum then return end
-    if hum:GetState() ~= Enum.HumanoidStateType.Jumping then
-        hum:ChangeState(Enum.HumanoidStateType.Jumping)
-    end
-end
-
 track(runService.RenderStepped:Connect(function()
     if dead or not state.thirdPerson then return end
     local char = getChar()
@@ -16961,12 +16953,16 @@ track(runService.RenderStepped:Connect(function()
     local cam = workspace.CurrentCamera
     if not root or not cam then return end
 
-    local desiredYaw = thirdPersonYaw
+    local baseYaw = math.atan2(root.CFrame.LookVector.X, root.CFrame.LookVector.Z)
+    local desiredYaw = baseYaw + thirdPersonYaw
     local desiredPitch = math.clamp(thirdPersonPitch, -1.15, 1.15)
-    local camOffset = CFrame.new(0, 4.5, -10)
-    local worldCFrame = root.CFrame * CFrame.fromEulerAnglesYXZ(desiredPitch, desiredYaw, 0)
-    local targetPos = worldCFrame:PointToWorldSpace(Vector3.new(0, 4.5, 10))
+
+    local orbit = CFrame.fromEulerAnglesYXZ(desiredPitch, desiredYaw, 0)
+    local distance = 10
+    local offset = orbit:VectorToWorldSpace(Vector3.new(0, 4.5, -distance))
+    local targetPos = root.Position + offset
     local lookAt = root.Position + Vector3.new(0, 2, 0)
+
     cam.CFrame = CFrame.lookAt(targetPos, lookAt)
 
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -16987,10 +16983,9 @@ end))
 
 track(userInputService.InputBegan:Connect(function(input, processed)
     if dead then return end
+
     if input.KeyCode == Enum.KeyCode.Space then
-        if miniToggleState or not state.thirdPerson then
-            unlockJumpKey()
-        end
+        return
     end
 
     if input.UserInputType == Enum.UserInputType.MouseButton2 then
