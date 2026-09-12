@@ -16102,9 +16102,6 @@ end
 local bridge = ensureRemoteActionBridge()
 if bridge then
     remoteServerDragEnabled = true
-    track(bridge.OnServerEvent:Connect(function(payload)
-        handleRemoteServerDrag(payload)
-    end))
 end
 
 track(workspace.DescendantAdded:Connect(function(inst)
@@ -18429,6 +18426,45 @@ local window = WindUI:CreateWindow({
     Acrylic = false, -- IMPORTANT: Acrylic blur = GPU drain on mobile
     Icon = "lucide:cross",
 })
+
+local miniToggleGui = Instance.new("ScreenGui")
+miniToggleGui.Name = "KryxMiniToggle"
+miniToggleGui.ResetOnSpawn = false
+miniToggleGui.IgnoreGuiInset = true
+miniToggleGui.Parent = playerGui
+
+local miniToggleButton = Instance.new("TextButton")
+miniToggleButton.Name = "ToggleButton"
+miniToggleButton.Size = UDim2.new(0, 46, 0, 46)
+miniToggleButton.Position = UDim2.new(1, -64, 0, 18)
+miniToggleButton.AnchorPoint = Vector2.new(1, 0)
+miniToggleButton.BackgroundColor3 = Color3.fromRGB(27, 30, 38)
+miniToggleButton.BorderSizePixel = 0
+miniToggleButton.Text = "◉"
+miniToggleButton.Font = Enum.Font.GothamBold
+miniToggleButton.TextSize = 18
+miniToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+miniToggleButton.AutoButtonColor = false
+miniToggleButton.Parent = miniToggleGui
+
+local miniToggleCorner = Instance.new("UICorner")
+miniToggleCorner.CornerRadius = UDim.new(0, 999)
+miniToggleCorner.Parent = miniToggleButton
+
+local miniToggleStroke = Instance.new("UIStroke")
+miniToggleStroke.Color = Color3.fromRGB(120, 160, 255)
+miniToggleStroke.Thickness = 1.2
+miniToggleStroke.Transparency = 0.2
+miniToggleStroke.Parent = miniToggleButton
+
+local miniToggleState = false
+miniToggleButton.MouseButton1Click:Connect(function()
+    miniToggleState = not miniToggleState
+    miniToggleButton.Text = miniToggleState and "◎" or "◉"
+    if window and type(window.Visible) == "boolean" then
+        window.Visible = not miniToggleState
+    end
+end)
 
 -- ==========================================
 -- TAB 1: ESP
