@@ -15738,6 +15738,7 @@ local state = {
     characterScale = 0.7,
     fixedFlight = false,
     fixedFlightHeight = 0,
+    ghostMode = false,
     vehicleGrip = 1,
     vehicleBrake = 1,
     vehicleLaunch = 1,
@@ -16953,6 +16954,11 @@ track(runService.RenderStepped:Connect(function()
     local cam = workspace.CurrentCamera
     if not root or not cam then return end
 
+    if state.ghostMode then
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    end
+
     local baseYaw = math.atan2(root.CFrame.LookVector.X, root.CFrame.LookVector.Z)
     local desiredYaw = baseYaw + thirdPersonYaw
     local desiredPitch = math.clamp(thirdPersonPitch, -1.15, 1.15)
@@ -16962,8 +16968,9 @@ track(runService.RenderStepped:Connect(function()
     local offset = orbit:VectorToWorldSpace(Vector3.new(0, 4.5, -distance))
     local targetPos = root.Position + offset
     local lookAt = root.Position + Vector3.new(0, 2, 0)
+    local desiredCF = CFrame.lookAt(targetPos, lookAt)
 
-    cam.CFrame = CFrame.lookAt(targetPos, lookAt)
+    cam.CFrame = cam.CFrame:Lerp(desiredCF, 0.18)
 
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
@@ -16973,7 +16980,7 @@ track(runService.RenderStepped:Connect(function()
 end))
 
 track(userInputService.InputChanged:Connect(function(input, processed)
-    if dead or not state.thirdPerson or processed then return end
+    if dead or processed then return end
     if input.UserInputType == Enum.UserInputType.MouseMovement and thirdPersonMouseLook then
         local delta = input.Delta
         thirdPersonYaw = thirdPersonYaw - delta.X * 0.005
@@ -16988,17 +16995,55 @@ track(userInputService.InputBegan:Connect(function(input, processed)
         return
     end
 
-    if input.UserInputType == Enum.UserInputType.MouseButton2 then
-        thirdPersonMouseLook = true
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        thirdPersonMouseLook = state.thirdPerson
     end
 end))
 
 track(userInputService.InputEnded:Connect(function(input, processed)
     if dead then return end
-    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
         thirdPersonMouseLook = false
     end
 end))
+
+local function applyGhostMode(enabled)
+    state.ghostMode = enabled
+    local char = getChar()
+    if not char then return end
+
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if enabled then
+                if part:GetAttribute("KryxGhostOriginalCanCollide") == nil then
+                    part:SetAttribute("KryxGhostOriginalCanCollide", part.CanCollide)
+                end
+                if part:GetAttribute("KryxGhostOriginalCanTouch") == nil then
+                    part:SetAttribute("KryxGhostOriginalCanTouch", part.CanTouch)
+                end
+                part.CanCollide = false
+                part.CanTouch = false
+                part.Massless = true
+                if part == char:FindFirstChild("HumanoidRootPart") then
+                    part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                    part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                end
+            else
+                local originalCollide = part:GetAttribute("KryxGhostOriginalCanCollide")
+                local originalTouch = part:GetAttribute("KryxGhostOriginalCanTouch")
+                if originalCollide ~= nil then
+                    part.CanCollide = originalCollide
+                    part:SetAttribute("KryxGhostOriginalCanCollide", nil)
+                end
+                if originalTouch ~= nil then
+                    part.CanTouch = originalTouch
+                    part:SetAttribute("KryxGhostOriginalCanTouch", nil)
+                end
+                part.Massless = false
+            end
+        end
+    end
+end
 
 local function getNearestPlayerTarget()
     local localRoot = getRoot()
@@ -18804,11 +18849,23 @@ playerTab:Toggle({
 
 playerTab:Toggle({
     Title = "Góc nhìn thứ ba",
-    Desc = "Đưa camera ra phía sau nhân vật",
+    Desc = "Đưa camera ra phía sau nhân vật, giữ chuột trái để xoay",
     Default = false,
     Callback = function(s)
         state.thirdPerson = s
+        if not s then
+            thirdPersonMouseLook = false
+        end
         applyThirdPerson()
+    end,
+})
+
+playerTab:Toggle({
+    Title = "Ghost mode",
+    Desc = "Thoát hồn: nhân vật đứng yên, camera thoát khỏi thân và đi qua vật mà không bị đẩy",
+    Default = false,
+    Callback = function(s)
+        applyGhostMode(s)
     end,
 })
 
