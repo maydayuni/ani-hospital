@@ -16506,13 +16506,28 @@ local function setMaxGraphics(enabled)
 end
 
 local function processLowGraphicsBatch(runId)
+    if not state.lowGraphics or runId ~= lowGraphicsRunId then return end
+
     local batch = {}
-    for _, instance in ipairs(lighting:GetChildren()) do
-        table.insert(batch, instance)
-    end
-    table.insert(batch, workspace.Terrain)
     for _, instance in ipairs(workspace:GetDescendants()) do
-        table.insert(batch, instance)
+        if instance:IsA("Model") then
+            local name = string.lower(instance.Name)
+            if instance:FindFirstChildOfClass("Humanoid")
+                or name:find("npc", 1, true)
+                or name:find("visitor", 1, true)
+                or name:find("patient", 1, true)
+                or isSimpleProxyModel(instance) then
+                table.insert(batch, instance)
+            end
+        elseif instance:IsA("ParticleEmitter") or instance:IsA("Trail")
+            or instance:IsA("Beam") or instance:IsA("Smoke")
+            or instance:IsA("Fire") or instance:IsA("Sparkles")
+            or instance:IsA("PostEffect") or instance:IsA("Highlight")
+            or instance:IsA("Clouds") or instance:IsA("Sky")
+            or instance:IsA("Atmosphere") or instance:IsA("SelectionBox")
+            or instance:IsA("BoxHandleAdornment") then
+            table.insert(batch, instance)
+        end
     end
 
     for index, instance in ipairs(batch) do
@@ -16520,9 +16535,10 @@ local function processLowGraphicsBatch(runId)
         if instance:IsA("Model") then
             simplifyDecorationModel(instance)
             hideNpcModel(instance)
+        else
+            simplifyLowGraphicsInstance(instance)
         end
-        simplifyLowGraphicsInstance(instance)
-        if index % 120 == 0 then
+        if index % 60 == 0 then
             task.wait()
         end
     end
@@ -16833,11 +16849,30 @@ local function removePlayerESP(player)
 end
 
 track(runService.RenderStepped:Connect(function()
-    if dead or not state.playerESP then return end
+    if dead then return end
+    if not (state.playerESP or state.drawLines) then return end
     if os.clock() - playerEspLastUpdate < 0.15 then return end
     playerEspLastUpdate = os.clock()
     for _, p in ipairs(players:GetPlayers()) do
-        if p ~= localPlayer then applyPlayerESP(p) end
+        if p ~= localPlayer then
+            if state.playerESP then
+                applyPlayerESP(p)
+            else
+                local char = p.Character
+                if char then
+                    local hl = char:FindFirstChild("KryxHighlight")
+                    if hl then hl:Destroy() end
+                end
+            end
+            if state.drawLines then
+                local char = p.Character
+                if char then
+                    addLineFor(char, Color3.fromRGB(0, 255, 255), "Player")
+                end
+            else
+                clearLineFor(p.Character)
+            end
+        end
     end
 end))
 
@@ -17322,63 +17357,32 @@ local function pushNearestTargetPlayer(force)
     end
     direction = direction.Unit
 
-    local remoteOk = requestServerTargetMove(nearestPlayer, direction, tonumber(force) or state.playerPushForce or 35)
-    dragTargetPlayer = nearestPlayer
-    notify("Đẩy người", remoteOk
-        and ("Đã gửi yêu cầu kéo thật tới server cho " .. nearestPlayer.Name .. ".")
-        or ("Bắt đầu kéo " .. nearestPlayer.Name .. " theo hướng di chuyển của bạn."), 2)
-    return true
-end
-
-track(runService.RenderStepped:Connect(function()
-    if dead or not dragTargetPlayer then return end
-    local localRoot = getRoot()
-    local targetCharacter = dragTargetPlayer and dragTargetPlayer.Character
-    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-    if not localRoot or not targetRoot then
-        dragTargetPlayer = nil
-        return
+    local existing = targetRoot:FindFirstChild("KryxLocalDrag")
+    if existing and existing:IsA("BodyVelocity") then
+        existing:Destroy()
     end
 
-    local localVel = localRoot.AssemblyLinearVelocity
-    local localMove = Vector3.new(localVel.X, 0, localVel.Z)
-    local direction = localMove.Magnitude > 1 and localMove.Unit or localRoot.CFrame.LookVector
-    local followDistance = 2.2 + math.clamp((state.playerPushForce or 35) / 40, 0, 2.8)
-    local desiredPos = localRoot.Position + direction * followDistance
-    local alpha = 0.12 + math.clamp(localMove.Magnitude / 120, 0, 0.18)
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = "KryxLocalDrag"
+    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bv.Velocity = direction * (tonumber(force) or state.playerPushForce or 35)
+    bv.Parent = targetRoot
 
-    local currentPos = targetRoot.Position
-    local nextPos = currentPos:Lerp(desiredPos, alpha)
-    local proposedCF = CFrame.new(nextPos, nextPos + direction)
-    targetRoot.CFrame = targetRoot.CFrame:Lerp(proposedCF, alpha)
+    task.delay(0.2, function()
+        if bv and bv.Parent then
+            bv:Destroy()
+        end
+    end)
 
-    local targetVel = targetRoot.AssemblyLinearVelocity
-    targetRoot.AssemblyLinearVelocity = Vector3.new(
-        targetVel.X * 0.85,
-        targetVel.Y * 0.8,
-        targetVel.Z * 0.85
-    )
-end))
+    dragTargetPlayer = nearestPlayer
+    notify("Đẩy người", "Đã kéo " .. nearestPlayer.Name .. " theo hướng của bạn (local).", 2)
+    return true
+end
 
 track(runService.RenderStepped:Connect(function()
     if dead or not state.objectPushEnabled then return end
     local target = getNearestPlayerTarget()
     if not target then return end
-
-    if state.objectPushMode == "server" then
-        local localRoot = getRoot()
-        local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        if localRoot and targetRoot then
-            local delta = targetRoot.Position - localRoot.Position
-            local dist = delta.Magnitude
-            if dist <= (state.objectPushDistance or 10) then
-                local direction = delta.Magnitude > 0.001 and delta.Unit or localRoot.CFrame.LookVector
-                requestServerTargetMove(target, direction, state.playerPushForce)
-            end
-        end
-        return
-    end
-
     applyLocalObjectPush(target)
 end))
 
@@ -18501,6 +18505,32 @@ local function fetchObject(itemName)
         return false
     end
 
+    local wasNoClip = state.noClip
+    if wasNoClip then
+        applyNoClip(false)
+    end
+
+    local savedCFrame = root.CFrame
+    local savedWalkSpeed = hum.WalkSpeed
+    local savedPlatformStand = hum.PlatformStand
+    local savedVelocity = root.AssemblyLinearVelocity
+    local savedAngular = root.AssemblyAngularVelocity
+
+    local function restoreCharacterState()
+        if root and root.Parent then
+            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            root.CFrame = savedCFrame
+        end
+        if hum and hum.Parent then
+            hum.WalkSpeed = savedWalkSpeed
+            hum.PlatformStand = savedPlatformStand
+        end
+        if workspace.CurrentCamera then
+            workspace.CurrentCamera.CameraSubject = hum
+        end
+    end
+
     for _, desc in ipairs(workspace:GetDescendants()) do
         if desc:IsA("ProximityPrompt") then
             if desc.ActionText == itemName or desc.ObjectText == itemName then
@@ -18508,9 +18538,13 @@ local function fetchObject(itemName)
                 local basePart = (parent:IsA("BasePart") and parent)
                     or parent:FindFirstChildWhichIsA("BasePart")
                 if basePart then
-                    local savedCFrame = root.CFrame
                     local savedLOS = desc.RequiresLineOfSight
                     local savedCollide = basePart.CanCollide
+
+                    hum.WalkSpeed = 0
+                    hum.PlatformStand = true
+                    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                    root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
 
                     desc.RequiresLineOfSight = false
                     basePart.CanCollide = false
@@ -18520,7 +18554,6 @@ local function fetchObject(itemName)
                     local attachment = parent:FindFirstChildOfClass("Attachment")
                     if attachment then targetPos = attachment.WorldPosition end
 
-                    -- invisible platform so we don't bonk the shelf
                     local platform = Instance.new("Part")
                     platform.Size = Vector3.new(5, 1, 5)
                     platform.Anchored = true
@@ -18529,12 +18562,16 @@ local function fetchObject(itemName)
                     platform.CFrame = CFrame.new(targetPos + Vector3.new(0, -2, 0))
                     platform.Parent = workspace
 
-                    root.CFrame = CFrame.new(targetPos + Vector3.new(0, 0, 2))
+                    local pickupCFrame = CFrame.new(targetPos + Vector3.new(0, 2.2, 0), targetPos + Vector3.new(0, 1.2, 2))
+                    root.CFrame = pickupCFrame
                     task.wait(0.05)
-                    root.Velocity = Vector3.new(0, 0, 0)
+                    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                    root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
 
                     task.wait(0.2)
-                    camera.CFrame = CFrame.lookAt(head.Position, targetPos)
+                    if workspace.CurrentCamera then
+                        workspace.CurrentCamera.CFrame = CFrame.lookAt(head.Position, targetPos)
+                    end
                     task.wait(0.05)
                     pcall(function()
                         if fireproximityprompt then fireproximityprompt(desc) end
@@ -18545,10 +18582,11 @@ local function fetchObject(itemName)
                     basePart.CanCollide = savedCollide
                     platform:Destroy()
 
-                    root.CFrame = savedCFrame
-                    root.Velocity = Vector3.new(0, 0, 0)
+                    restoreCharacterState()
                     task.wait(0.05)
-                    camera.CameraSubject = hum
+                    if wasNoClip then
+                        applyNoClip(true)
+                    end
 
                     busy = false
                     debugLog("Fetch object succeeded", itemName, desc:GetFullName())
@@ -18556,6 +18594,11 @@ local function fetchObject(itemName)
                 end
             end
         end
+    end
+
+    restoreCharacterState()
+    if wasNoClip then
+        applyNoClip(true)
     end
 
     busy = false
@@ -18644,7 +18687,7 @@ track(userInputService.InputBegan:Connect(function(input, processed)
 
     if input.KeyCode == Enum.KeyCode.Space and processed then
         local hum = getHumanoid()
-        if miniToggleState or not state.thirdPerson then
+        if not state.thirdPerson then
             unlockJumpKey()
         elseif hum and hum:GetState() ~= Enum.HumanoidStateType.Jumping then
             hum:ChangeState(Enum.HumanoidStateType.Jumping)
@@ -18678,67 +18721,6 @@ local window = WindUI:CreateWindow({
     Acrylic = false, -- IMPORTANT: Acrylic blur = GPU drain on mobile
     Icon = "lucide:cross",
 })
-
-local miniToggleGui = Instance.new("ScreenGui")
-miniToggleGui.Name = "KryxMiniToggle"
-miniToggleGui.ResetOnSpawn = false
-miniToggleGui.IgnoreGuiInset = true
-miniToggleGui.Parent = playerGui
-
-local miniToggleButton = Instance.new("TextButton")
-miniToggleButton.Name = "ToggleButton"
-miniToggleButton.Size = UDim2.new(0, 46, 0, 46)
-miniToggleButton.Position = UDim2.new(1, -64, 0, 18)
-miniToggleButton.AnchorPoint = Vector2.new(1, 0)
-miniToggleButton.BackgroundColor3 = Color3.fromRGB(27, 30, 38)
-miniToggleButton.BorderSizePixel = 0
-miniToggleButton.Text = "◉"
-miniToggleButton.Font = Enum.Font.GothamBold
-miniToggleButton.TextSize = 18
-miniToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-miniToggleButton.AutoButtonColor = false
-miniToggleButton.Parent = miniToggleGui
-
-local miniToggleCorner = Instance.new("UICorner")
-miniToggleCorner.CornerRadius = UDim.new(0, 999)
-miniToggleCorner.Parent = miniToggleButton
-
-local miniToggleStroke = Instance.new("UIStroke")
-miniToggleStroke.Color = Color3.fromRGB(120, 160, 255)
-miniToggleStroke.Thickness = 1.2
-miniToggleStroke.Transparency = 0.2
-miniToggleStroke.Parent = miniToggleButton
-
-local miniToggleState = false
-local function setWindowVisible(visible)
-    if not window then return end
-
-    local ok = pcall(function()
-        window.Visible = visible
-    end)
-    if ok then return end
-
-    local candidates = {
-        window.Frame,
-        window.Main,
-        window.Root,
-        window.Container,
-        window.UI,
-    }
-    for _, candidate in ipairs(candidates) do
-        if candidate and candidate:IsA("GuiObject") then
-            pcall(function()
-                candidate.Visible = visible
-            end)
-        end
-    end
-end
-
-miniToggleButton.MouseButton1Click:Connect(function()
-    miniToggleState = not miniToggleState
-    miniToggleButton.Text = miniToggleState and "◎" or "◉"
-    setWindowVisible(not miniToggleState)
-end)
 
 -- ==========================================
 -- TAB 1: ESP
@@ -19461,19 +19443,8 @@ vehicleTab:Toggle({
     Callback = function(s)
         state.objectPushEnabled = s
         if s then
-            notify("Đẩy vật", "Đẩy vật đã bật; chế độ hiện tại: " .. tostring(state.objectPushMode), 2)
+            notify("Đẩy vật", "Đẩy vật local đã bật.", 2)
         end
-    end,
-})
-
-vehicleTab:Dropdown({
-    Title = "Chế độ vật đẩy",
-    Desc = "Local = hiệu ứng client; Server = dùng bridge nếu server có listener.",
-    Values = { "local", "server" },
-    Value = state.objectPushMode,
-    Callback = function(value)
-        state.objectPushMode = value == "server" and "server" or "local"
-        notify("Đẩy vật", "Chế độ: " .. tostring(state.objectPushMode), 2)
     end,
 })
 
