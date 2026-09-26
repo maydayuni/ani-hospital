@@ -15925,31 +15925,35 @@ local function applyNoClip(enabled)
     for _, part in ipairs(char:GetDescendants()) do
         if part:IsA("BasePart") then
             if enabled then
-                if part:GetAttribute("KryxOriginalCanCollide") == nil then
-                    part:SetAttribute("KryxOriginalCanCollide", part.CanCollide)
-                end
-                if part:GetAttribute("KryxOriginalCanTouch") == nil then
-                    part:SetAttribute("KryxOriginalCanTouch", part.CanTouch)
-                end
-                part.CanCollide = false
-                part.CanTouch = false
-                part.Massless = true
+                pcall(function()
+                    if part:GetAttribute("CanCollideBackup") == nil then
+                        part:SetAttribute("CanCollideBackup", part.CanCollide)
+                    end
+                    if part:GetAttribute("CanTouchBackup") == nil then
+                        part:SetAttribute("CanTouchBackup", part.CanTouch)
+                    end
+                    part.CanCollide = false
+                    part.CanTouch = false
+                    part.Massless = true
+                end)
             else
-                local originalCollide = part:GetAttribute("KryxOriginalCanCollide")
-                local originalTouch = part:GetAttribute("KryxOriginalCanTouch")
-                if originalCollide ~= nil then
-                    part.CanCollide = originalCollide
-                    part:SetAttribute("KryxOriginalCanCollide", nil)
-                else
-                    part.CanCollide = true
-                end
-                if originalTouch ~= nil then
-                    part.CanTouch = originalTouch
-                    part:SetAttribute("KryxOriginalCanTouch", nil)
-                else
-                    part.CanTouch = true
-                end
-                part.Massless = false
+                pcall(function()
+                    local originalCollide = part:GetAttribute("CanCollideBackup")
+                    local originalTouch = part:GetAttribute("CanTouchBackup")
+                    if originalCollide ~= nil then
+                        part.CanCollide = originalCollide
+                        part:SetAttribute("CanCollideBackup", nil)
+                    else
+                        part.CanCollide = true
+                    end
+                    if originalTouch ~= nil then
+                        part.CanTouch = originalTouch
+                        part:SetAttribute("CanTouchBackup", nil)
+                    else
+                        part.CanTouch = true
+                    end
+                    part.Massless = false
+                end)
             end
         end
     end
@@ -16314,12 +16318,16 @@ end
 
 local function simplifyDecorationModel(model)
     if not state.lowGraphics or not isSimpleProxyModel(model) then return end
-    if model:GetAttribute("KryxLowGraphicsHidden") then return end
-    model:SetAttribute("KryxLowGraphicsHidden", true)
+    pcall(function()
+        if model:GetAttribute("StreamedOut") then return end
+        model:SetAttribute("StreamedOut", true)
+    end)
     for _, descendant in ipairs(model:GetDescendants()) do
         if descendant:IsA("BasePart") then
-            rememberLowGraphicsValue(descendant, "LocalTransparencyModifier")
-            descendant.LocalTransparencyModifier = 1
+            pcall(function()
+                rememberLowGraphicsValue(descendant, "LocalTransparencyModifier")
+                descendant.LocalTransparencyModifier = 1
+            end)
         end
     end
 end
@@ -16563,8 +16571,8 @@ local function setLowGraphics(enabled)
         end
         savedLowGraphics = {}
         for _, instance in ipairs(workspace:GetDescendants()) do
-            if instance:IsA("Model") and instance:GetAttribute("KryxLowGraphicsHidden") then
-                pcall(function() instance:SetAttribute("KryxLowGraphicsHidden", nil) end)
+            if instance:IsA("Model") and instance:GetAttribute("StreamedOut") then
+                pcall(function() instance:SetAttribute("StreamedOut", nil) end)
             end
         end
         for material, color in pairs(savedTerrainColors) do
@@ -16591,7 +16599,7 @@ local function setLowGraphics(enabled)
         clearESPByType("ObjectItem")
         for _, player in ipairs(players:GetPlayers()) do
             local char = player.Character
-            local highlight = char and char:FindFirstChild("KryxHighlight")
+            local highlight = char and char:FindFirstChild("AnchorMarker")
             if highlight then highlight:Destroy() end
             if char and lineCache[char] then
                 if lineCache[char].Frame then lineCache[char].Frame:Destroy() end
@@ -16757,9 +16765,9 @@ end)
 local function applyPlayerESP(player)
     local char = player.Character
     if not char or char == localPlayer.Character then return end
-    if not char:FindFirstChild("KryxHighlight") then
+    if not char:FindFirstChild("AnchorMarker") then
         local hl = Instance.new("Highlight")
-        hl.Name = "KryxHighlight"
+        hl.Name = "AnchorMarker"
         hl.Adornee = char
         hl.FillColor = Color3.fromRGB(0, 255, 255)
         hl.FillTransparency = 0.6
@@ -16776,7 +16784,7 @@ end
 local function removePlayerESP(player)
     local char = player.Character
     if char then
-        local hl = char:FindFirstChild("KryxHighlight")
+        local hl = char:FindFirstChild("AnchorMarker")
         if hl then hl:Destroy() end
         clearLineFor(char)
     end
@@ -16794,7 +16802,7 @@ track(runService.RenderStepped:Connect(function()
             else
                 local char = p.Character
                 if char then
-                    local hl = char:FindFirstChild("KryxHighlight")
+                    local hl = char:FindFirstChild("AnchorMarker")
                     if hl then hl:Destroy() end
                 end
             end
@@ -17090,13 +17098,13 @@ local function applyLocalObjectPush(targetPlayer)
     end
 
     local force = tonumber(state.playerPushForce) or 35
-    local existing = targetRoot:FindFirstChild("KryxLocalPush")
+    local existing = targetRoot:FindFirstChild("LocalPushVelocity")
     if existing and existing:IsA("BodyVelocity") then
         existing:Destroy()
     end
 
     local bv = Instance.new("BodyVelocity")
-    bv.Name = "KryxLocalPush"
+    bv.Name = "LocalPushVelocity"
     bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
     bv.Velocity = direction * force
     bv.Parent = targetRoot
@@ -17238,13 +17246,13 @@ local function pushNearestTargetPlayer(force)
     end
     direction = direction.Unit
 
-    local existing = targetRoot:FindFirstChild("KryxLocalDrag")
+    local existing = targetRoot:FindFirstChild("LocalDragVelocity")
     if existing and existing:IsA("BodyVelocity") then
         existing:Destroy()
     end
 
     local bv = Instance.new("BodyVelocity")
-    bv.Name = "KryxLocalDrag"
+    bv.Name = "LocalDragVelocity"
     bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
     bv.Velocity = direction * (tonumber(force) or state.playerPushForce or 35)
     bv.Parent = targetRoot
@@ -17295,7 +17303,7 @@ local function setDriftEffects(model, enabled)
         local emitter = driftEffectParts[wheel]
         if enabled and not emitter then
             emitter = Instance.new("ParticleEmitter")
-            emitter.Name = "KryxDriftDust"
+            emitter.Name = "GroundDustEmitter"
             emitter.Enabled = false
             emitter.Rate = 18
             emitter.Lifetime = NumberRange.new(0.25, 0.5)
@@ -17409,7 +17417,7 @@ local function applyVehicleHandling(seat)
                 if (name:find("exhaust", 1, true) or name:find("muffler", 1, true)
                     or name:find("pipe", 1, true)) and not vehicleExhaustParts[part] then
                     local fire = Instance.new("Fire")
-                    fire.Name = "KryxVehicleExhaust"
+                    fire.Name = "ExhaustFireEmitter"
                     fire.Heat = 4
                     fire.Size = 3
                     fire.Color = Color3.fromRGB(255, 125, 25)
@@ -17598,12 +17606,12 @@ local function hookColorMinigame()
     if minigame and minigame:FindFirstChild("Colors") then
         for _, colorBtn in ipairs(minigame.Colors:GetChildren()) do
             local button = colorBtn:FindFirstChild("Button")
-            if button and not button:GetAttribute("KryxHooked") then
-                button:SetAttribute("KryxHooked", true)
-                button:SetAttribute("KryxOriginalColor", tostring(button.Color))
+            if button and not button:GetAttribute("SignalBound") then
+                button:SetAttribute("SignalBound", true)
+                button:SetAttribute("InitialColor", tostring(button.Color))
                 track(button:GetPropertyChangedSignal("Color"):Connect(function()
                     if state.autoMinigames then
-                        local origStr = button:GetAttribute("KryxOriginalColor")
+                        local origStr = button:GetAttribute("InitialColor")
                         if origStr and tostring(button.Color) ~= origStr then
                             if not minigameClicked[button] then
                                 table.insert(minigameQueue, button)
@@ -19561,6 +19569,46 @@ genv.__AHOSP_CLEANUP = function()
             end
         end
     end)
+    minigameClicked = {}
+    minigameQueue = {}
+    cachedCandidates = {}
+    cachedPrompts = {}
+    itemInventory = {}
+    inventoryButtons = {}
+    characterModelScaleCache = {}
+    promptDurations = {}
+
+    thirdPersonYaw = 0
+    thirdPersonPitch = 0
+    thirdPersonMouseLook = false
+    ghostBodyHeight = nil
+
+    objectPushCooldown = 0
+    colaBoostUntil = 0
+    tpCooldown = false
+    busy = false
+    worldScanDirty = true
+
+    automationPhase = "Idle"
+    automationBusy = false
+    lastTaskDiagnostic = ""
+    lastTaskDiagnosticAt = 0
+    minigameLastTrigger = os.clock()
+
+    noClipLastUpdate = 0
+    playerEspLastUpdate = 0
+    followLastUpdate = 0
+
+    remoteActionEvent = nil
+    remoteServerDragEnabled = false
+
+    -- Xóa mọi instance lạ còn sót trong Workspace
+    pcall(function()
+        for _, child in ipairs(workspace:GetChildren()) do
+            if child.Name == "RefPart" then child:Destroy() end
+        end
+    end)
+
     if genv.__AHOSP_CLEANUP then
         genv.__AHOSP_CLEANUP = nil
     end
