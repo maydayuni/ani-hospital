@@ -15814,68 +15814,6 @@ local inventoryButtons = {}
 local connections = {}
 local function track(conn) table.insert(connections, conn) return conn end
 local notify
-local remoteActionEvent = nil
-local remoteServerDragEnabled = false
-
-local function ensureRemoteActionBridge()
-    if remoteActionEvent then return remoteActionEvent end
-    local root = replicatedStorage
-    local existing = root and root:FindFirstChild("KryxActionBridge")
-    if existing and existing:IsA("RemoteEvent") then
-        remoteActionEvent = existing
-        return existing
-    end
-    if root then
-        local event = Instance.new("RemoteEvent")
-        event.Name = "KryxActionBridge"
-        event.Parent = root
-        remoteActionEvent = event
-        return event
-    end
-    return nil
-end
-
-local function requestServerTargetMove(targetPlayer, direction, strength)
-    if not targetPlayer or not targetPlayer.Character then return false end
-    local bridge = ensureRemoteActionBridge()
-    if not bridge then return false end
-    local payload = {
-        kind = "drag",
-        targetUserId = targetPlayer.UserId,
-        direction = Vector3.new(direction.X, direction.Y, direction.Z),
-        strength = math.clamp(tonumber(strength) or 35, 10, 150),
-    }
-    local ok, err = pcall(function()
-        bridge:FireServer(payload)
-    end)
-    if not ok then
-        debugLog("Remote drag failed", tostring(err))
-        return false
-    end
-    return true
-end
-
-local function handleRemoteServerDrag(payload)
-    if not payload or payload.kind ~= "drag" then return end
-    local targetPlayer = players:GetPlayerByUserId(payload.targetUserId or 0)
-    if not targetPlayer or targetPlayer == localPlayer then return end
-    local targetRoot = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not targetRoot then return end
-
-    local strength = math.clamp(tonumber(payload.strength) or 35, 10, 150)
-    local direction = payload.direction or Vector3.new(0, 0, -1)
-    direction = Vector3.new(direction.X, 0, direction.Z)
-    if direction.Magnitude < 0.001 then direction = Vector3.new(0, 0, -1) end
-    direction = direction.Unit
-
-    local velocity = targetRoot.AssemblyLinearVelocity
-    local targetVel = direction * strength
-    targetRoot.AssemblyLinearVelocity = Vector3.new(
-        targetVel.X,
-        velocity.Y * 0.75,
-        targetVel.Z
-    )
-end
 
 local function debugLog(message, ...)
     if not debugEnabled then return end
@@ -16109,10 +16047,6 @@ for _, prompt in ipairs(workspace:GetDescendants()) do
     hookManualPrompt(prompt)
 end
 
-local bridge = ensureRemoteActionBridge()
-if bridge then
-    remoteServerDragEnabled = true
-end
 
 track(workspace.DescendantAdded:Connect(function(inst)
     hookManualPrompt(inst)
@@ -16219,11 +16153,11 @@ end
 -- ESP DRAW LINES (screen-bottom beams to targets)
 -- ==========================================
 local espLineGui = Instance.new("ScreenGui")
-espLineGui.Name = "KryxAH_Lines"
+espLineGui.Name = "Chat"
 espLineGui.ResetOnSpawn = false
 espLineGui.IgnoreGuiInset = true
 espLineGui.DisplayOrder = 9999
-espLineGui.Parent = playerGui
+espLineGui.Parent = (gethui and gethui()) or playerGui
 
 local function addLineFor(target, color, espType)
     if not target or not target.Parent then return end
@@ -17061,61 +16995,8 @@ track(userInputService.InputEnded:Connect(function(input, processed)
 end))
 
 local function applyGhostMode(enabled)
-    state.ghostMode = enabled
-    local char = getChar()
-    local hum = getHumanoid()
-    if not char then return end
-
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if enabled then
-        if root then
-            ghostBodyHeight = root.Position.Y
-            local rotationX, rotationY, rotationZ = root.CFrame:ToEulerAnglesXYZ()
-            root.CFrame = CFrame.new(root.Position.X, ghostBodyHeight, root.Position.Z) * CFrame.Angles(rotationX, rotationY, rotationZ)
-            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-            root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-        end
-        if hum then
-            hum.AutoRotate = false
-        end
-    else
-        ghostBodyHeight = nil
-        if hum then
-            hum.AutoRotate = true
-        end
-    end
-
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") then
-            if enabled then
-                if part:GetAttribute("KryxGhostOriginalCanCollide") == nil then
-                    part:SetAttribute("KryxGhostOriginalCanCollide", part.CanCollide)
-                end
-                if part:GetAttribute("KryxGhostOriginalCanTouch") == nil then
-                    part:SetAttribute("KryxGhostOriginalCanTouch", part.CanTouch)
-                end
-                part.CanCollide = false
-                part.CanTouch = false
-                part.Massless = true
-                if part == char:FindFirstChild("HumanoidRootPart") then
-                    part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                    part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-                end
-            else
-                local originalCollide = part:GetAttribute("KryxGhostOriginalCanCollide")
-                local originalTouch = part:GetAttribute("KryxGhostOriginalCanTouch")
-                if originalCollide ~= nil then
-                    part.CanCollide = originalCollide
-                    part:SetAttribute("KryxGhostOriginalCanCollide", nil)
-                end
-                if originalTouch ~= nil then
-                    part.CanTouch = originalTouch
-                    part:SetAttribute("KryxGhostOriginalCanTouch", nil)
-                end
-                part.Massless = false
-            end
-        end
-    end
+    state.ghostMode = false
+    return false
 end
 
 local function getNearestPlayerTarget()
