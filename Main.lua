@@ -15315,7 +15315,7 @@ Scale=aa.UIScale,
 aa.UIScaleObj=ax
 
 aa.ScreenGui=at("ScreenGui",{
-Name="WindUI",
+Name="\0\1\2\3\7",
 Parent=aw,
 IgnoreGuiInset=true,
 ScreenInsets="None",
@@ -15343,17 +15343,17 @@ Name="ToolTips",
 })
 
 aa.NotificationGui=at("ScreenGui",{
-Name="WindUI/Notifications",
+Name="\0\1\2\3\4",
 Parent=aw,
 IgnoreGuiInset=true,
 })
 aa.DropdownGui=at("ScreenGui",{
-Name="WindUI/Dropdowns",
+Name="\0\1\2\3\5",
 Parent=aw,
 IgnoreGuiInset=true,
 })
 aa.TooltipGui=at("ScreenGui",{
-Name="WindUI/Tooltips",
+Name="\0\1\2\3\6",
 Parent=aw,
 IgnoreGuiInset=true,
 })
@@ -16047,10 +16047,6 @@ local function rebuildWorldScanCache()
     worldScanDirty = false
 end
 
-for _, prompt in ipairs(workspace:GetDescendants()) do
-    hookManualPrompt(prompt)
-end
-
 
 track(workspace.DescendantAdded:Connect(function(inst)
     hookManualPrompt(inst)
@@ -16157,7 +16153,7 @@ end
 -- ESP DRAW LINES (screen-bottom beams to targets)
 -- ==========================================
 local espLineGui = Instance.new("ScreenGui")
-espLineGui.Name = "Chat"
+espLineGui.Name = "\0\1\2\3\8"
 espLineGui.ResetOnSpawn = false
 espLineGui.IgnoreGuiInset = true
 espLineGui.DisplayOrder = 9999
@@ -16664,12 +16660,18 @@ end))
 -- ESP SCAN LOOP (0.5s heartbeat, prunes dead targets first)
 -- ==========================================
 task.spawn(function()
+    task.wait(6)
+
     while not dead do
-        task.wait(state.lowGraphics and 2 or 0.8)
+        task.wait(state.lowGraphics and 2 or 1.2)
         if state.lowGraphics then
             continue
         end
-        if worldScanDirty then
+
+        local anyEspOn = state.anomaliesESP or state.patientsESP
+            or state.itemsESP or state.drawLines or state.playerESP
+
+        if worldScanDirty and anyEspOn then
             rebuildWorldScanCache()
         end
         -- prune gone targets from the cache
@@ -16678,6 +16680,11 @@ task.spawn(function()
                 if hl and hl.Parent then hl:Destroy() end
                 highlightCache[target] = nil
             end
+        end
+
+        if not anyEspOn then
+            task.wait(0.2)
+            continue
         end
 
         if not state.anomaliesESP then
@@ -19559,10 +19566,9 @@ genv.__AHOSP_CLEANUP = function()
         for _, container in ipairs(containers) do
             if container then
                 for _, child in ipairs(container:GetChildren()) do
-                    if child.Name == "WindUI"
-                        or child.Name == "WindUI/Notifications"
-                        or child.Name == "WindUI/Dropdowns"
-                        or child.Name == "WindUI/Tooltips" then
+                    local n = tostring(child.Name)
+                    if n == "\0\1\2\3\4" or n == "\0\1\2\3\5"
+                        or n == "\0\1\2\3\6" or n == "\0\1\2\3\7" then
                         child:Destroy()
                     end
                 end
