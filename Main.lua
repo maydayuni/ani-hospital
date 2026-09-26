@@ -695,6 +695,12 @@ local guiService = game:GetService("GuiService")
 local virtualInputManager = game:GetService("VirtualInputManager")
 local virtualUser = game:GetService("VirtualUser")
 local lighting = game:GetService("Lighting")
+local _origPrint = print
+local _origWarn = warn
+pcall(function()
+    print = function() end
+    warn = function() end
+end)
 
 local localPlayer = players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui", 15)
@@ -831,7 +837,6 @@ local function debugLog(message, ...)
     if #debugLogLines > DEBUG_LOG_LIMIT then
         table.remove(debugLogLines, 1)
     end
-    print("[AH DEBUG] " .. line)
 end
 
 local function logEnvironmentSnapshot(label)
@@ -868,7 +873,7 @@ end
 local function copyDebugLog()
     local text = #debugLogLines > 0
         and table.concat(debugLogLines, "\n")
-        or "[AH DEBUG] Chưa có log. Hãy bật Debug rồi thực hiện thao tác."
+        or "Chưa có log. Hãy bật Debug rồi thực hiện thao tác."
     if setclipboard then
         local ok = pcall(function() setclipboard(text) end)
         if ok then
@@ -891,8 +896,13 @@ local function logError(tag, message, ...)
         extra = " | " .. table.concat(values, " | ")
     end
     local line = string.format("[AH ERROR][%s] %s%s", tostring(tag), tostring(message), extra)
-    print(line)
-    debugLog("ERROR " .. tostring(tag), tostring(message), unpack(parts))
+    table.insert(debugLogLines, line)
+    if #debugLogLines > DEBUG_LOG_LIMIT then
+        table.remove(debugLogLines, 1)
+    end
+    if debugEnabled then
+        debugLog("ERROR " .. tostring(tag), tostring(message), unpack(parts))
+    end
 end
 
 -- character helpers
@@ -2931,7 +2941,6 @@ local function scanWorkspaceNames()
                 tostring(descendant.ClassName),
                 table.concat(hits, ", "))
             table.insert(matches, info)
-            print("[AH SCAN] " .. info)
         end
 
         if descendant:IsA("ProximityPrompt") then
@@ -2939,7 +2948,6 @@ local function scanWorkspaceNames()
                 tostring(descendant:GetFullName()),
                 tostring(descendant.ActionText),
                 tostring(descendant.ObjectText))
-            print("[AH SCAN] " .. promptInfo)
             table.insert(matches, promptInfo)
         end
     end
@@ -2991,7 +2999,6 @@ local function findCheckinFolder()
         end
     end
 
-    print("[AH SCAN] No check-in folder matched. Full workspace scan started.")
     scanWorkspaceNames()
     return nil
 end
@@ -3048,7 +3055,6 @@ end
 
 local function diagnoseAutomation()
     debugLog("Diagnostic started")
-    print("[AH SCAN] Running exhaustive workspace scan for patient/checkin names.")
     scanWorkspaceNames()
 
     local patientCount = 0
@@ -3507,11 +3513,9 @@ local function scanUsableObjects()
             end
         end
     end
-    print("[AH OBJECTS] " .. tostring(#found) .. " usable prompts")
     for _, entry in ipairs(found) do
-        print("[AH OBJECTS] " .. entry)
     end
-    notify("Đồ vật", "Đã quét " .. tostring(#found) .. " đồ vật/prompt. Xem log để biết tên thật.", 4)
+    notify("Đồ vật", "Đã quét " .. tostring(#found) .. " đồ vật/prompt.", 4)
     return found
 end
 
@@ -3605,8 +3609,8 @@ end))
 -- UI (WindUI, inlined above — offline proof)
 -- ==========================================
 window = NovaUI:CreateWindow({
-    Title = "Súc vật bệnh viện",
-    Author = "bản tối ưu",
+    Title = "SVBV",
+    Author = "v1.3",
     Width = 500,
     Height = 500,
 })
@@ -4051,7 +4055,7 @@ autoTab:Toggle({
             debugLog("Debug enabled")
             notify("Debug", "Đã bật debug tổng. Tất cả log đang được ghi vào 1 nơi.", 3)
         else
-            print("[AH DEBUG] disabled")
+            debugLog("Debug disabled")
         end
     end,
 })
@@ -4603,4 +4607,4 @@ genv.__AHOSP_CLEANUP = function()
     end
 end
 
-notify("animal hospital", "Loaded! 🏥💚", 4)
+notify("SVBV", "Loaded!", 4)
