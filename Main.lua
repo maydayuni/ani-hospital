@@ -858,18 +858,6 @@ local function logEnvironmentSnapshot(label)
         "Prompts=" .. tostring(promptCount))
 end
 
-local function hookManualPrompt(prompt)
-    if not prompt:IsA("ProximityPrompt") or manualPromptConnections[prompt] then return end
-    manualPromptConnections[prompt] = prompt.Triggered:Connect(function(player)
-        if player == localPlayer then
-            debugLog("Manual prompt", prompt:GetFullName(),
-                "Action=" .. tostring(prompt.ActionText),
-                "Object=" .. tostring(prompt.ObjectText),
-                "Parent=" .. tostring(prompt.Parent and prompt.Parent:GetFullName()))
-        end
-    end)
-end
-
 local function copyDebugLog()
     local text = #debugLogLines > 0
         and table.concat(debugLogLines, "\n")
@@ -1054,7 +1042,6 @@ end
 
 
 track(workspace.DescendantAdded:Connect(function(inst)
-    hookManualPrompt(inst)
     if state.lowGraphics then return end
     if not inst:IsA("Highlight") then
         worldScanDirty = true
@@ -1157,15 +1144,23 @@ end
 -- ==========================================
 -- ESP DRAW LINES (screen-bottom beams to targets)
 -- ==========================================
-local espLineGui = Instance.new("ScreenGui")
-espLineGui.Name = "Frame" .. math.random(10000, 99999)
-espLineGui.ResetOnSpawn = false
-espLineGui.IgnoreGuiInset = true
-espLineGui.DisplayOrder = 9999
-espLineGui.Parent = (gethui and gethui()) or playerGui
+local espLineGui = nil
+
+local function ensureEspLineGui()
+    if espLineGui and espLineGui.Parent then return espLineGui end
+    espLineGui = Instance.new("ScreenGui")
+    espLineGui.Name = "Frame" .. math.random(10000, 99999)
+    espLineGui.ResetOnSpawn = false
+    espLineGui.IgnoreGuiInset = true
+    espLineGui.DisplayOrder = 9999
+    espLineGui.Parent = (gethui and gethui()) or playerGui
+    return espLineGui
+end
 
 local function addLineFor(target, color, espType)
+    if not state.drawLines then return end          -- Early return nếu không bật
     if not target or not target.Parent then return end
+    local gui = ensureEspLineGui()                   -- Tạo nếu chưa có
     if lineCache[target] then
         lineCache[target].Frame.BackgroundColor3 = color
         lineCache[target].ESPType = espType
@@ -1176,7 +1171,7 @@ local function addLineFor(target, color, espType)
     frame.BackgroundColor3 = color
     frame.AnchorPoint = Vector2.new(0.5, 0.5)
     frame.Visible = false
-    frame.Parent = espLineGui
+    frame.Parent = gui                               -- Dùng biến gui thay vì espLineGui
     lineCache[target] = { Frame = frame, ESPType = espType }
 end
 
@@ -1185,6 +1180,10 @@ local function clearAllLines()
         if entry.Frame then entry.Frame:Destroy() end
     end
     lineCache = {}
+    if espLineGui and espLineGui.Parent then
+        espLineGui:Destroy()
+        espLineGui = nil
+    end
 end
 
 local function rememberLowGraphicsValue(instance, property)
@@ -1665,7 +1664,7 @@ end))
 -- ESP SCAN LOOP (0.5s heartbeat, prunes dead targets first)
 -- ==========================================
 task.spawn(function()
-    task.wait(6)
+    task.wait(99)
 
     while not dead do
         task.wait(state.lowGraphics and 2 or 1.2)
@@ -1837,9 +1836,11 @@ end))
 local colaBoostUntil = 0
 local COLA_SPEED = 32
 
+local walkSpeedLoopEnabled = false   -- Chỉ bật khi user thay đổi speed
 task.spawn(function()
     while not dead do
         task.wait(0.4)
+        if not walkSpeedLoopEnabled then continue end   -- Early return nếu chưa cần
         local hum = getHumanoid()
         if hum and hum.WalkSpeed ~= 0 then
             local target = (os.clock() < colaBoostUntil) and COLA_SPEED or state.speed
@@ -2444,8 +2445,10 @@ end
 
 track(runService.Heartbeat:Connect(function()
     if dead then return end
-    local seat = getVehicleSeat()
-    if not seat then
+    local char = getChar()
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or not hum.SeatPart then   -- Early return trước khi gọi getVehicleSeat
         if vehicleLastModel then restoreVehicleProperties() end
         return
     end
@@ -3698,7 +3701,11 @@ espTab:Toggle({
     Default = false,
     Callback = function(s)
         state.drawLines = s
-        if not s then clearAllLines() end
+        if s then
+            ensureEspLineGui()   -- Tạo ScreenGui ngay khi bật
+        else
+            clearAllLines()      -- Xóa line + ScreenGui khi tắt
+        end
     end,
 })
 
@@ -3731,8 +3738,9 @@ playerTab:Input({
     Type = "Input",
     Callback = function(text)
         local n = tonumber(text)
-        if n then
+        if n and n ~= 16 then
             state.speed = n
+            walkSpeedLoopEnabled = true
             notify("🏃", "Speed set to " .. n, 2)
         end
     end,
@@ -3744,6 +3752,7 @@ playerTab:Button({
     Icon = "lucide:rotate-ccw",
     Callback = function()
         state.speed = 16
+        walkSpeedLoopEnabled = false
         notify("🏃", "Speed reset! ✨", 2)
     end,
 })
