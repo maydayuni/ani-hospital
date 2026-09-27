@@ -94,25 +94,57 @@ local NovaUI = (function()
     end
 
     local blurOn = false
-    local function ensureBlur()
+    local function ensureBlur(target)
         if blurOn then return end
         blurOn = true
+
+        local uiBlur = target and target:FindFirstChild("NovaBlur")
+        if not uiBlur then
+            local ok, blurInst = pcall(function()
+                return Instance.new("UIBlur")
+            end)
+            if ok and blurInst then
+                uiBlur = blurInst
+                uiBlur.Name = "NovaBlur"
+                uiBlur.Size = 0
+                uiBlur.Parent = target
+                tw(uiBlur, 0.5, { Size = 12 })
+                return
+            end
+        end
+
         local ex = Lighting:FindFirstChild("NovaBlur")
         if ex then ex:Destroy() end
         local b = Instance.new("BlurEffect")
         b.Name = "NovaBlur"; b.Size = 0; b.Parent = Lighting
         tw(b, 0.5, { Size = 14 })
     end
-    local function killBlur()
-        local b = Lighting:FindFirstChild("NovaBlur")
-        if b then tw(b, 0.3, { Size = 0 }); task.delay(0.4, function() if b.Parent then b:Destroy() end end) end
+    local function killBlur(target)
+        local b = target and target:FindFirstChild("NovaBlur")
+        if b then
+            if b:IsA("UIBlur") then
+                tw(b, 0.25, { Size = 0 })
+                task.delay(0.3, function() if b.Parent then b:Destroy() end end)
+            else
+                tw(b, 0.3, { Size = 0 })
+                task.delay(0.4, function() if b.Parent then b:Destroy() end end)
+            end
+            blurOn = false
+            return
+        end
+
+        local bg = Lighting:FindFirstChild("NovaBlur")
+        if bg then
+            tw(bg, 0.3, { Size = 0 })
+            task.delay(0.4, function() if bg.Parent then bg:Destroy() end end)
+        end
+        blurOn = false
     end
 
     local Nova = {}
 
     function Nova:CreateWindow(o)
         o = o or {}
-        ensureBlur()
 
         local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
         local W, H = o.Width or 560, o.Height or 420
@@ -132,6 +164,7 @@ local NovaUI = (function()
             gui.ScreenInsets = Enum.ScreenInsets.None
         end)
         gui.Parent = getContainer()
+        ensureBlur(gui)
 
         local main = Instance.new("Frame")
         main.Name = rname("Frame")
@@ -208,6 +241,32 @@ local NovaUI = (function()
         local minimized = false
         local fullscreen = false
         local savedState = nil
+        local miniDock = Instance.new("TextButton")
+        miniDock.Name = rname("Dock")
+        miniDock.Size = UDim2.new(0, 42, 0, 42)
+        miniDock.Position = UDim2.new(1, -58, 1, -58)
+        miniDock.AnchorPoint = Vector2.new(1, 1)
+        miniDock.BackgroundColor3 = T.accent
+        miniDock.BorderSizePixel = 0
+        miniDock.Text = "+"
+        miniDock.TextColor3 = T.text
+        miniDock.Font = Enum.Font.GothamBold
+        miniDock.TextSize = 18
+        miniDock.Visible = false
+        miniDock.Parent = gui
+        corner(miniDock, 21)
+        stroke(miniDock, T.stroke, 1, 0.6)
+        miniDock.MouseButton1Click:Connect(function()
+            if fullscreen then
+                fullscreen = false
+                fsBtn.Text = "□"
+            end
+            minimized = false
+            main.Visible = true
+            main.Size = UDim2.new(0, currentW, 0, currentH)
+            miniDock.Visible = false
+            tw(main, 0.28, { Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(0, currentW, 0, currentH) }, Enum.EasingStyle.Quint)
+        end)
 
         local function resetToSafeSize()
             local cam = workspace.CurrentCamera
@@ -248,19 +307,29 @@ local NovaUI = (function()
                     main.Size = savedState.size
                     savedState = nil
                 end
+                fsBtn.Text = "□"
             end
+
             minimized = not minimized
-            tw(main, 0.35, {
-                Size = minimized and UDim2.new(0, currentW, 0, 46) or UDim2.new(0, currentW, 0, currentH)
-            }, Enum.EasingStyle.Quint)
-            minBtn.Text = minimized and "+" or "−"
+            if minimized then
+                main.Visible = false
+                miniDock.Visible = true
+                miniDock.Text = "+"
+                killBlur(gui)
+            else
+                main.Visible = true
+                miniDock.Visible = false
+                minBtn.Text = "−"
+                ensureBlur(gui)
+            end
         end)
 
         -- Nút fullscreen
         local fsBtn = mkCtrl("□", T.textDim, function()
             if minimized then
                 minimized = false
-                tw(main, 0.35, { Size = UDim2.new(0, currentW, 0, currentH) }, Enum.EasingStyle.Quint)
+                main.Visible = true
+                miniDock.Visible = false
                 minBtn.Text = "−"
             end
             fullscreen = not fullscreen
@@ -294,23 +363,127 @@ local NovaUI = (function()
             end
         end)
 
+        local closeLocked = false
+        local function requestClose()
+            if closeLocked then return end
+            closeLocked = true
+            local d = Instance.new("Frame")
+            d.Name = rname("Dialog")
+            d.Size = UDim2.new(0, 290, 0, 138)
+            d.Position = UDim2.new(0.5, 0, 0.5, 0)
+            d.AnchorPoint = Vector2.new(0.5, 0.5)
+            d.BackgroundColor3 = T.bg2
+            d.BorderSizePixel = 0
+            d.Parent = gui
+            corner(d, 14)
+            stroke(d, T.stroke, 1, 0.85)
+
+            local title = Instance.new("TextLabel")
+            title.Size = UDim2.new(1, -24, 0, 22)
+            title.Position = UDim2.new(0, 12, 0, 12)
+            title.BackgroundTransparency = 1
+            title.Text = "Tắt menu?"
+            title.TextColor3 = T.text
+            title.Font = Enum.Font.GothamBold
+            title.TextSize = 15
+            title.TextXAlignment = Enum.TextXAlignment.Left
+            title.Parent = d
+
+            local body = Instance.new("TextLabel")
+            body.Size = UDim2.new(1, -24, 0, 48)
+            body.Position = UDim2.new(0, 12, 0, 42)
+            body.BackgroundTransparency = 1
+            body.Text = "Menu sẽ tắt và không mở lại cho đến khi chạy lại script."
+            body.TextColor3 = T.textDim
+            body.Font = Enum.Font.Gotham
+            body.TextSize = 12
+            body.TextWrapped = true
+            body.TextXAlignment = Enum.TextXAlignment.Left
+            body.Parent = d
+
+            local yes = Instance.new("TextButton")
+            yes.Size = UDim2.new(0, 96, 0, 32)
+            yes.Position = UDim2.new(1, -208, 1, -42)
+            yes.AnchorPoint = Vector2.new(0, 1)
+            yes.BackgroundColor3 = T.danger
+            yes.BorderSizePixel = 0
+            yes.Text = "Tắt"
+            yes.TextColor3 = T.text
+            yes.Font = Enum.Font.GothamBold
+            yes.TextSize = 12
+            yes.Parent = d
+            corner(yes, 8)
+            yes.MouseButton1Click:Connect(function()
+                if rawget(genv, "__AHOSP_UI_CLOSED") ~= true then
+                    genv.__AHOSP_UI_CLOSED = true
+                end
+                killBlur(gui)
+                gui:Destroy()
+            end)
+
+            local no = Instance.new("TextButton")
+            no.Size = UDim2.new(0, 96, 0, 32)
+            no.Position = UDim2.new(1, -96, 1, -42)
+            no.AnchorPoint = Vector2.new(0, 1)
+            no.BackgroundColor3 = T.bg3
+            no.BorderSizePixel = 0
+            no.Text = "Huỷ"
+            no.TextColor3 = T.text
+            no.Font = Enum.Font.GothamBold
+            no.TextSize = 12
+            no.Parent = d
+            corner(no, 8)
+            no.MouseButton1Click:Connect(function()
+                closeLocked = false
+                d:Destroy()
+            end)
+
+            local s = Instance.new("UIStroke", d)
+            s.Color = T.stroke
+            s.Thickness = 1
+            s.Transparency = 0.8
+            s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+            d.Parent = gui
+            d.ZIndex = 100
+            yes.ZIndex = 101
+            no.ZIndex = 101
+            title.ZIndex = 101
+            body.ZIndex = 101
+        end
+
         -- Nút đóng
         mkCtrl("×", T.danger, function()
-            tw(main, 0.25, { Size = UDim2.new(0, W, 0, 0), BackgroundTransparency = 1 })
-            task.delay(0.3, function() gui.Enabled = false end)
+            requestClose()
         end)
 
         -- drag
         local dg, ds, sp
-        tb.InputBegan:Connect(function(i)
-            if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-                dg = true; ds = i.Position; sp = main.Position
+        local function beginDrag(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
+                return
             end
-        end)
+            dg = true; ds = input.Position; sp = main.Position
+        end
+        main.InputBegan:Connect(beginDrag)
+        tb.InputBegan:Connect(beginDrag)
         UserInputService.InputChanged:Connect(function(i)
             if dg and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
                 local d = i.Position - ds
-                main.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+                local nextX = sp.X.Offset + d.X
+                local nextY = sp.Y.Offset + d.Y
+                local cam = workspace.CurrentCamera
+                local vw = cam and cam.ViewportSize or Vector2.new(1280, 720)
+                local halfW = main.AbsoluteSize.X / 2
+                local halfH = main.AbsoluteSize.Y / 2
+                local maxX = math.floor(vw.X / 2) - halfW
+                local maxY = math.floor(vw.Y / 2) - halfH
+                local minX = -maxX
+                local minY = -maxY
+
+                nextX = math.clamp(nextX, minX, maxX)
+                nextY = math.clamp(nextY, minY, maxY)
+                main.Position = UDim2.new(sp.X.Scale, nextX, sp.Y.Scale, nextY)
             end
         end)
         UserInputService.InputEnded:Connect(function(i)
@@ -733,7 +906,8 @@ local NovaUI = (function()
         end
 
         function win:Destroy()
-            killBlur()
+            killBlur(gui)
+            if miniDock and miniDock.Parent then miniDock:Destroy() end
             gui:Destroy()
         end
 
@@ -3678,6 +3852,10 @@ end))
 -- ==========================================
 -- UI (WindUI, inlined above — offline proof)
 -- ==========================================
+if rawget(genv, "__AHOSP_UI_CLOSED") == true then
+    return
+end
+
 window = NovaUI:CreateWindow({
     Title = "SVBV",
     Author = "v1.3",
