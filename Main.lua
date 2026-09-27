@@ -58,6 +58,41 @@ local NovaUI = (function()
         a:Play(); return a
     end
 
+    local function makeCard(parent, size, radius, bgColor)
+        local f = Instance.new("Frame")
+        f.Size = size
+        f.BackgroundColor3 = bgColor or T.bg2
+        f.BackgroundTransparency = 0.2
+        f.BorderSizePixel = 0
+        f.Parent = parent
+        corner(f, radius or 8)
+        stroke(f, T.stroke, 1, 0.92)
+        return f
+    end
+
+    local function bindButtonStyle(button, normalColor, hoverColor, activeColor, textColor)
+        button.AutoButtonColor = false
+        button.TextColor3 = textColor or T.text
+        normalColor = normalColor or T.bg2
+        hoverColor = hoverColor or T.bg3
+        activeColor = activeColor or T.accent
+
+        button.MouseEnter:Connect(function()
+            tw(button, 0.15, { BackgroundColor3 = hoverColor, BackgroundTransparency = 0 })
+        end)
+        button.MouseLeave:Connect(function()
+            tw(button, 0.15, { BackgroundColor3 = normalColor, BackgroundTransparency = 0.2 })
+        end)
+        button.MouseButton1Down:Connect(function()
+            tw(button, 0.1, { BackgroundColor3 = activeColor, BackgroundTransparency = 0.3 })
+        end)
+        button.MouseButton1Up:Connect(function()
+            tw(button, 0.2, { BackgroundColor3 = hoverColor, BackgroundTransparency = 0 })
+        end)
+
+        return button
+    end
+
     local blurOn = false
     local function ensureBlur()
         if blurOn then return end
@@ -456,25 +491,19 @@ local NovaUI = (function()
                 b.TextColor3 = T.text
                 b.Font = Enum.Font.GothamMedium
                 b.TextSize = 13
-                b.AutoButtonColor = false
-                corner(b, 8); stroke(b, T.stroke, 1, 0.92)
-                b.MouseEnter:Connect(function() tw(b, 0.15, { BackgroundColor3 = T.bg3, BackgroundTransparency = 0 }) end)
-                b.MouseLeave:Connect(function() tw(b, 0.15, { BackgroundColor3 = T.bg2, BackgroundTransparency = 0.2 }) end)
-                b.MouseButton1Down:Connect(function() tw(b, 0.1, { BackgroundColor3 = T.accent, BackgroundTransparency = 0.3 }) end)
-                b.MouseButton1Up:Connect(function() tw(b, 0.2, { BackgroundColor3 = T.bg3, BackgroundTransparency = 0 }) end)
+                b.Parent = ct
+                corner(b, 8)
+                stroke(b, T.stroke, 1, 0.92)
+                bindButtonStyle(b, T.bg2, T.bg3, T.accent, T.text)
                 b.MouseButton1Click:Connect(function() if o.Callback then pcall(o.Callback) end end)
-                add(b); return b
+                add(b)
+                return b
             end
 
             function t:Toggle(o)
                 o = o or {}
                 local st = o.Default or false
-                local f = Instance.new("Frame")
-                f.Size = UDim2.new(1, 0, 0, 36)
-                f.BackgroundColor3 = T.bg2
-                f.BackgroundTransparency = 0.2
-                f.BorderSizePixel = 0
-                corner(f, 8); stroke(f, T.stroke, 1, 0.92)
+                local f = makeCard(ct, UDim2.new(1, 0, 0, 36), 8)
                 local lb = Instance.new("TextLabel")
                 lb.Size = UDim2.new(0.7, 0, 1, 0); lb.Position = UDim2.new(0, 14, 0, 0)
                 lb.BackgroundTransparency = 1
@@ -502,7 +531,8 @@ local NovaUI = (function()
                     tw(kn, 0.25, { Position = st and UDim2.new(1, -18, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) }, Enum.EasingStyle.Quint)
                     if o.Callback then pcall(o.Callback, st) end
                 end)
-                add(f); return f
+                add(f)
+                return f
             end
 
             function t:Input(o)
