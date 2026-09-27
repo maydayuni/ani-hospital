@@ -78,7 +78,14 @@ local NovaUI = (function()
     function Nova:CreateWindow(o)
         o = o or {}
         ensureBlur()
+
+        local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
         local W, H = o.Width or 560, o.Height or 420
+        local maxW = math.max(320, math.floor(viewport.X * 0.9))
+        local maxH = math.max(260, math.floor(viewport.Y * 0.82))
+        local safeW = math.clamp(W, 320, maxW)
+        local safeH = math.clamp(H, 220, maxH)
+        local currentW, currentH = safeW, safeH
 
         local gui = Instance.new("ScreenGui")
         gui.Name = rname("Frame")
@@ -93,12 +100,13 @@ local NovaUI = (function()
 
         local main = Instance.new("Frame")
         main.Name = rname("Frame")
-        main.Size = UDim2.new(0, W, 0, H)
+        main.Size = UDim2.new(0, currentW, 0, currentH)
         main.Position = UDim2.new(0.5, 0, 0.5, 0)
         main.AnchorPoint = Vector2.new(0.5, 0.5)
         main.BackgroundColor3 = T.bg
         main.BackgroundTransparency = 0.15
         main.BorderSizePixel = 0
+        main.ClipsDescendants = true
         main.Parent = gui
         corner(main, 14)
         stroke(main, T.stroke, 1, 0.9)
@@ -166,6 +174,16 @@ local NovaUI = (function()
         local fullscreen = false
         local savedState = nil
 
+        local function resetToSafeSize()
+            local cam = workspace.CurrentCamera
+            local vw = cam and cam.ViewportSize or Vector2.new(1280, 720)
+            currentW = math.clamp(W, 320, math.max(320, math.floor(vw.X * 0.9)))
+            currentH = math.clamp(H, 220, math.max(220, math.floor(vw.Y * 0.82)))
+            if not fullscreen and not minimized then
+                main.Size = UDim2.new(0, currentW, 0, currentH)
+            end
+        end
+
         local function mkCtrl(txt, col, cb)
             local b = Instance.new("TextButton")
             b.Size = UDim2.new(0, 26, 0, 26)
@@ -188,7 +206,6 @@ local NovaUI = (function()
         -- Nút thu nhỏ (collapse)
         local minBtn = mkCtrl("−", T.textDim, function()
             if fullscreen then
-                -- Thoát fullscreen trước, rồi mới thu nhỏ
                 fullscreen = false
                 if savedState then
                     main.AnchorPoint = savedState.anchor
@@ -199,7 +216,7 @@ local NovaUI = (function()
             end
             minimized = not minimized
             tw(main, 0.35, {
-                Size = minimized and UDim2.new(0, W, 0, 46) or UDim2.new(0, W, 0, H)
+                Size = minimized and UDim2.new(0, currentW, 0, 46) or UDim2.new(0, currentW, 0, currentH)
             }, Enum.EasingStyle.Quint)
             minBtn.Text = minimized and "+" or "−"
         end)
@@ -207,14 +224,12 @@ local NovaUI = (function()
         -- Nút fullscreen
         local fsBtn = mkCtrl("□", T.textDim, function()
             if minimized then
-                -- Nếu đang thu nhỏ, mở lại trước
                 minimized = false
-                tw(main, 0.35, { Size = UDim2.new(0, W, 0, H) }, Enum.EasingStyle.Quint)
+                tw(main, 0.35, { Size = UDim2.new(0, currentW, 0, currentH) }, Enum.EasingStyle.Quint)
                 minBtn.Text = "−"
             end
             fullscreen = not fullscreen
             if fullscreen then
-                -- Lưu trạng thái hiện tại
                 savedState = {
                     anchor = main.AnchorPoint,
                     pos = main.Position,
@@ -223,7 +238,7 @@ local NovaUI = (function()
                 main.AnchorPoint = Vector2.new(0.5, 0.5)
                 tw(main, 0.45, {
                     Position = UDim2.new(0.5, 0, 0.5, 0),
-                    Size = UDim2.new(1, 0, 1, 0)
+                    Size = UDim2.new(1, -18, 1, -18)
                 }, Enum.EasingStyle.Quart)
                 fsBtn.Text = "❐"
             else
@@ -237,7 +252,7 @@ local NovaUI = (function()
                 else
                     tw(main, 0.4, {
                         Position = UDim2.new(0.5, 0, 0.5, 0),
-                        Size = UDim2.new(0, W, 0, H)
+                        Size = UDim2.new(0, currentW, 0, currentH)
                     }, Enum.EasingStyle.Quart)
                 end
                 fsBtn.Text = "□"
@@ -270,13 +285,34 @@ local NovaUI = (function()
         -- sidebar
         local sb = Instance.new("Frame")
         sb.Name = rname("Frame")
-        sb.Size = UDim2.new(0, 160, 1, -62)
+        sb.Size = UDim2.new(0, math.min(160, math.max(126, currentW * 0.28)), 1, -62)
         sb.Position = UDim2.new(0, 12, 0, 54)
         sb.BackgroundColor3 = T.bg2
         sb.BackgroundTransparency = 0.45
         sb.BorderSizePixel = 0
         sb.Parent = main
         corner(sb, 10)
+         
+        local function syncResponsiveLayout()
+            local width = math.max(320, main.AbsoluteSize.X)
+            local height = math.max(260, main.AbsoluteSize.Y)
+            local sideW = math.clamp(width * 0.28, 120, 180)
+            sb.Size = UDim2.new(0, sideW, 1, -62)
+            ct.Size = UDim2.new(1, -(sideW + 28), 1, -62)
+            ct.Position = UDim2.new(0, sideW + 12, 0, 54)
+            if na then
+                local notifW = math.clamp(width * 0.32, 180, 280)
+                na.Size = UDim2.new(0, notifW, 0, 0)
+                na.Position = UDim2.new(1, -(notifW + 16), 0, 54)
+            end
+        end
+
+        main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+            if not minimized and not fullscreen then
+                syncResponsiveLayout()
+            end
+        end)
+        task.defer(syncResponsiveLayout)
         local sbl = Instance.new("UIListLayout", sb)
         sbl.Padding = UDim.new(0, 3)
         local sbp = Instance.new("UIPadding", sb)
@@ -290,6 +326,7 @@ local NovaUI = (function()
         ct.Position = UDim2.new(0, 184, 0, 54)
         ct.BackgroundTransparency = 1
         ct.BorderSizePixel = 0
+        ct.ClipsDescendants = true
         ct.ScrollBarThickness = 3
         ct.ScrollBarImageColor3 = T.accent
         ct.ScrollBarImageTransparency = 0.3
