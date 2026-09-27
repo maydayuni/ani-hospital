@@ -172,7 +172,7 @@ local NovaUI = (function()
         main.Position = UDim2.new(0.5, 0, 0.5, 0)
         main.AnchorPoint = Vector2.new(0.5, 0.5)
         main.BackgroundColor3 = T.bg
-        main.BackgroundTransparency = 0.15
+        main.BackgroundTransparency = 0.18
         main.BorderSizePixel = 0
         main.ClipsDescendants = true
         main.Parent = gui
@@ -247,6 +247,7 @@ local NovaUI = (function()
         miniDock.Position = UDim2.new(1, -58, 1, -58)
         miniDock.AnchorPoint = Vector2.new(1, 1)
         miniDock.BackgroundColor3 = T.accent
+        miniDock.BackgroundTransparency = 0.08
         miniDock.BorderSizePixel = 0
         miniDock.Text = "+"
         miniDock.TextColor3 = T.text
@@ -255,7 +256,37 @@ local NovaUI = (function()
         miniDock.Visible = false
         miniDock.Parent = gui
         corner(miniDock, 21)
-        stroke(miniDock, T.stroke, 1, 0.6)
+        stroke(miniDock, T.stroke, 1, 0.7)
+
+        local miniDockDrag = false
+        local miniDockStart, miniDockOrigin
+        miniDock.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                miniDockDrag = true
+                miniDockStart = input.Position
+                miniDockOrigin = miniDock.Position
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if miniDockDrag and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                local delta = input.Position - miniDockStart
+                local cam = workspace.CurrentCamera
+                local vw = cam and cam.ViewportSize or Vector2.new(1280, 720)
+                local sizeX = miniDock.AbsoluteSize.X
+                local sizeY = miniDock.AbsoluteSize.Y
+                local maxX = vw.X - sizeX * 0.5 - 12
+                local maxY = vw.Y - sizeY * 0.5 - 12
+                local x = math.clamp(miniDockOrigin.X.Offset + delta.X, -vw.X * 0.5 + sizeX * 0.5 + 12, maxX - vw.X * 0.5)
+                local y = math.clamp(miniDockOrigin.Y.Offset + delta.Y, -vw.Y * 0.5 + sizeY * 0.5 + 12, maxY - vw.Y * 0.5)
+                miniDock.Position = UDim2.new(miniDockOrigin.X.Scale, x, miniDockOrigin.Y.Scale, y)
+            end
+        end)
+        UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                miniDockDrag = false
+            end
+        end)
+
         miniDock.MouseButton1Click:Connect(function()
             if fullscreen then
                 fullscreen = false
@@ -265,6 +296,7 @@ local NovaUI = (function()
             main.Visible = true
             main.Size = UDim2.new(0, currentW, 0, currentH)
             miniDock.Visible = false
+            ensureBlur(gui)
             tw(main, 0.28, { Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(0, currentW, 0, currentH) }, Enum.EasingStyle.Quint)
         end)
 
@@ -373,10 +405,11 @@ local NovaUI = (function()
             d.Position = UDim2.new(0.5, 0, 0.5, 0)
             d.AnchorPoint = Vector2.new(0.5, 0.5)
             d.BackgroundColor3 = T.bg2
+            d.BackgroundTransparency = 0.12
             d.BorderSizePixel = 0
             d.Parent = gui
             corner(d, 14)
-            stroke(d, T.stroke, 1, 0.85)
+            stroke(d, T.stroke, 1, 0.7)
 
             local title = Instance.new("TextLabel")
             title.Size = UDim2.new(1, -24, 0, 22)
@@ -401,37 +434,44 @@ local NovaUI = (function()
             body.TextXAlignment = Enum.TextXAlignment.Left
             body.Parent = d
 
+            local buttonRow = Instance.new("Frame")
+            buttonRow.Size = UDim2.new(1, -24, 0, 32)
+            buttonRow.Position = UDim2.new(0, 12, 1, -42)
+            buttonRow.AnchorPoint = Vector2.new(0, 1)
+            buttonRow.BackgroundTransparency = 1
+            buttonRow.Parent = d
+
             local yes = Instance.new("TextButton")
             yes.Size = UDim2.new(0, 96, 0, 32)
-            yes.Position = UDim2.new(1, -208, 1, -42)
-            yes.AnchorPoint = Vector2.new(0, 1)
+            yes.Position = UDim2.new(0, 0, 0, 0)
             yes.BackgroundColor3 = T.danger
             yes.BorderSizePixel = 0
             yes.Text = "Tắt"
             yes.TextColor3 = T.text
             yes.Font = Enum.Font.GothamBold
             yes.TextSize = 12
-            yes.Parent = d
+            yes.Parent = buttonRow
             corner(yes, 8)
             yes.MouseButton1Click:Connect(function()
                 if rawget(genv, "__AHOSP_UI_CLOSED") ~= true then
                     genv.__AHOSP_UI_CLOSED = true
                 end
+                pcall(function() if rawget(_G, "window") then _G.window = nil end end)
                 killBlur(gui)
                 gui:Destroy()
             end)
 
             local no = Instance.new("TextButton")
             no.Size = UDim2.new(0, 96, 0, 32)
-            no.Position = UDim2.new(1, -96, 1, -42)
-            no.AnchorPoint = Vector2.new(0, 1)
+            no.Position = UDim2.new(1, -96, 0, 0)
+            no.AnchorPoint = Vector2.new(1, 0)
             no.BackgroundColor3 = T.bg3
             no.BorderSizePixel = 0
             no.Text = "Huỷ"
             no.TextColor3 = T.text
             no.Font = Enum.Font.GothamBold
             no.TextSize = 12
-            no.Parent = d
+            no.Parent = buttonRow
             corner(no, 8)
             no.MouseButton1Click:Connect(function()
                 closeLocked = false
@@ -446,6 +486,7 @@ local NovaUI = (function()
 
             d.Parent = gui
             d.ZIndex = 100
+            buttonRow.ZIndex = 101
             yes.ZIndex = 101
             no.ZIndex = 101
             title.ZIndex = 101
@@ -711,23 +752,39 @@ local NovaUI = (function()
             function t:Input(o)
                 o = o or {}
                 local f = Instance.new("Frame")
-                f.Size = UDim2.new(1, 0, 0, 36)
+                f.Size = UDim2.new(1, 0, 0, 48)
                 f.BackgroundColor3 = T.bg2; f.BackgroundTransparency = 0.2
                 f.BorderSizePixel = 0; corner(f, 8); stroke(f, T.stroke, 1, 0.92)
+
+                local title = Instance.new("TextLabel")
+                title.Size = UDim2.new(1, -18, 0, 14)
+                title.Position = UDim2.new(0, 10, 0, 6)
+                title.BackgroundTransparency = 1
+                title.Text = o.Title or "Input"
+                title.TextColor3 = T.text
+                title.Font = Enum.Font.GothamMedium
+                title.TextSize = 12
+                title.TextXAlignment = Enum.TextXAlignment.Left
+                title.Parent = f
+
                 local bx = Instance.new("TextBox")
-                bx.Size = UDim2.new(0.65, 0, 1, 0); bx.Position = UDim2.new(0, 14, 0, 0)
-                bx.BackgroundTransparency = 1; bx.Text = ""
-                bx.PlaceholderText = o.Placeholder or o.Title or ""
+                bx.Size = UDim2.new(0.62, -10, 0, 20); bx.Position = UDim2.new(0, 10, 0, 22)
+                bx.BackgroundColor3 = T.bg3; bx.BackgroundTransparency = 0.2
+                bx.BorderSizePixel = 0
+                bx.Text = tostring(o.Value or "")
+                bx.PlaceholderText = o.Placeholder or "Ví dụ: 16"
                 bx.TextColor3 = T.text; bx.PlaceholderColor3 = T.textDim
-                bx.Font = Enum.Font.Gotham; bx.TextSize = 13
+                bx.Font = Enum.Font.Gotham; bx.TextSize = 12
                 bx.TextXAlignment = Enum.TextXAlignment.Left
                 bx.ClearTextOnFocus = false; bx.Parent = f
+                corner(bx, 6)
+
                 local bt = Instance.new("TextButton")
-                bt.Size = UDim2.new(0, 60, 0, 24); bt.Position = UDim2.new(1, -8, 0.5, 0)
-                bt.AnchorPoint = Vector2.new(1, 0.5)
+                bt.Size = UDim2.new(0, 56, 0, 22); bt.Position = UDim2.new(1, -10, 0, 22)
+                bt.AnchorPoint = Vector2.new(1, 0)
                 bt.BackgroundColor3 = T.accent; bt.BorderSizePixel = 0
                 bt.Text = o.ButtonText or "Set"
-                bt.TextColor3 = T.text; bt.Font = Enum.Font.GothamBold; bt.TextSize = 12
+                bt.TextColor3 = T.text; bt.Font = Enum.Font.GothamBold; bt.TextSize = 11
                 bt.AutoButtonColor = false; bt.Parent = f
                 corner(bt, 6)
                 bt.MouseEnter:Connect(function() tw(bt, 0.15, { BackgroundColor3 = T.accentHover }) end)
